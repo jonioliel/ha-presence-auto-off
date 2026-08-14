@@ -120,33 +120,43 @@ async def controller_factory(
             assert created_area.id == config.area_id
 
         entity_registry = er.async_get(hass)
+
+        def ensure_registry_entry(entity_id: str, unique_id: str) -> er.RegistryEntry:
+            """Register an exact ID while preserving any pre-seeded test state."""
+            registry_entry = entity_registry.async_get(entity_id)
+            if registry_entry is None:
+                # EntityRegistry refuses to claim an ID already present only in
+                # the state machine and would suffix it with `_2`. Preserve the
+                # test state while creating the configured registry identity.
+                existing_state = hass.states.get(entity_id)
+                if existing_state is not None:
+                    hass.states.async_remove(entity_id)
+                domain, object_id = split_entity_id(entity_id)
+                registry_entry = entity_registry.async_get_or_create(
+                    domain,
+                    "test",
+                    unique_id,
+                    suggested_object_id=object_id,
+                )
+                assert registry_entry.entity_id == entity_id
+                if existing_state is not None:
+                    hass.states.async_set(
+                        entity_id,
+                        existing_state.state,
+                        existing_state.attributes,
+                    )
+            return registry_entry
+
         for entity_id in (
             config.presence_entity,
             config.shabbat_entity,
             config.holiday_entity,
         ):
-            if entity_id is None or entity_registry.async_get(entity_id) is not None:
-                continue
-            domain, object_id = split_entity_id(entity_id)
-            registry_entry = entity_registry.async_get_or_create(
-                domain,
-                "test",
-                f"configured-input-{entity_id}",
-                suggested_object_id=object_id,
-            )
-            assert registry_entry.entity_id == entity_id
+            if entity_id is not None:
+                ensure_registry_entry(entity_id, f"configured-input-{entity_id}")
 
         for entity_id in config.target_entities:
-            registry_entry = entity_registry.async_get(entity_id)
-            if registry_entry is None:
-                domain, object_id = split_entity_id(entity_id)
-                registry_entry = entity_registry.async_get_or_create(
-                    domain,
-                    "test",
-                    entity_id,
-                    suggested_object_id=object_id,
-                )
-                assert registry_entry.entity_id == entity_id
+            ensure_registry_entry(entity_id, entity_id)
             entity_registry.async_update_entity(
                 entity_id,
                 area_id=config.area_id,
@@ -1550,10 +1560,15 @@ async def test_live_presence_id_reuse_is_fail_closed(
 ) -> None:
     """A replacement binary sensor cannot drive a rule configured for another UUID."""
     registry = er.async_get(hass)
+    original_presence = registry.async_get_or_create(
+        "binary_sensor",
+        "test",
+        "live-reuse-presence",
+        suggested_object_id="room_presence",
+    )
+    assert original_presence.entity_id == PRESENCE_ENTITY
     hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
     controller = await controller_factory(_rule_config())
-    original_presence = registry.async_get(PRESENCE_ENTITY)
-    assert original_presence is not None
 
     registry.async_update_entity(
         PRESENCE_ENTITY,
