@@ -148,7 +148,7 @@ custom_components/presence_auto_off
 ```bash
 python -m pip install -r requirements_test.txt
 ruff check .
-pytest
+python -m pytest
 ```
 
 הריפוזיטורי כולל בדיקות אוטומטיות, Hassfest ו־HACS validation.
