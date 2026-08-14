@@ -1,6 +1,6 @@
-# Presence Auto-Off for Home Assistant
+# SmplWise Presence Auto-Off for Home Assistant
 
-> כל כלל חדר נרשם כ־Device תחת האינטגרציה Presence Auto-Off. כל ישויות
+> כל כלל חדר נרשם כ־Device תחת האינטגרציה SmplWise Presence Auto-Off. כל ישויות
 > השליטה והסטטוס משויכות אליו, ופעולת ההגדרה בדף ה־Device פותחת את כלל החדר
 > המתאים לעריכה. הישויות אינן מסווגות עוד תחת Helpers.
 
@@ -45,8 +45,8 @@
    ```
 
 4. לבחור קטגוריה **Integration**.
-5. לחפש **Presence Auto-Off**, להתקין ולהפעיל מחדש את Home Assistant.
-6. לפתוח **Settings → Devices & services → Add integration** ולבחור **Presence Auto-Off**.
+5. לחפש **SmplWise Presence Auto-Off**, להתקין ולהפעיל מחדש את Home Assistant.
+6. לפתוח **Settings → Devices & services → Add integration** ולבחור **SmplWise Presence Auto-Off**.
 
 ## התקנה ידנית
 
@@ -192,4 +192,4 @@ python -m pytest
 
 ## English summary
 
-Presence Auto-Off creates one editable room rule per config entry. It waits for a selected presence binary sensor to remain off, rechecks optional Shabbat/holiday binary-sensor conditions, and turns off only an explicit list of switchable entities assigned to the room's Home Assistant area. An optional restart-safe restore journal can reproduce the prior state of only the selected entities that the rule successfully turned off when presence returns. It is local-only, configured entirely through the UI, observable through status/timestamp/event entities, and installable through HACS.
+SmplWise Presence Auto-Off creates one editable room rule per config entry. It waits for a selected presence binary sensor to remain off, rechecks optional Shabbat/holiday binary-sensor conditions, and turns off only an explicit list of switchable entities assigned to the room's Home Assistant area. An optional restart-safe restore journal can reproduce the prior state of only the selected entities that the rule successfully turned off when presence returns. It is local-only, configured entirely through the UI, observable through status/timestamp/event entities, and installable through HACS.

@@ -100,6 +100,7 @@ async def test_rule_device_owns_every_generated_entity(
     )
     assert device is not None
     assert device.config_entry_id == entry.entry_id
+    assert device.manufacturer == "SmplWise (SW)"
     assert device.configuration_url == (
         "homeassistant://config/integrations/integration/"
         f"{DOMAIN}#config_entry={entry.entry_id}"

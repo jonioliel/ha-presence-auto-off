@@ -1,6 +1,6 @@
 {
   "domain": "presence_auto_off",
-  "name": "Presence Auto-Off",
+  "name": "SmplWise Presence Auto-Off",
   "codeowners": ["@jonioliel"],
   "config_flow": true,
   "documentation": "https://github.com/jonioliel/ha-presence-auto-off",
@@ -8,5 +8,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/jonioliel/ha-presence-auto-off/issues",
   "requirements": [],
-  "version": "1.2.0"
+  "version": "1.2.1"
 }

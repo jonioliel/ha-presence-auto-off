@@ -1,7 +1,7 @@
 {
-  "title": "כיבוי אוטומטי לפי נוכחות",
+  "title": "SmplWise – כיבוי אוטומטי לפי נוכחות",
   "config": {
-    "flow_title": "כיבוי לפי נוכחות: {name}",
+    "flow_title": "SmplWise – כיבוי לפי נוכחות: {name}",
     "step": {
       "user": {
         "title": "יצירת כלל לחדר",

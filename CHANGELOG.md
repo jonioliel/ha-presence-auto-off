@@ -1,6 +1,13 @@
 # Changelog
 
-All notable changes to Presence Auto-Off are documented here.
+All notable changes to SmplWise Presence Auto-Off are documented here.
+
+## [1.2.1] - 2026-08-14
+
+### Changed
+
+- Branded the integration as SmplWise Presence Auto-Off.
+- Room-rule devices now identify their manufacturer as SmplWise (SW).
 
 ## [1.2.0] - 2026-08-14
 
@@ -35,6 +42,7 @@ All notable changes to Presence Auto-Off are documented here.
 - Status, day-type, next-run, last-run, enabled, allowed, and activity entities.
 - Hebrew and English translations, diagnostics, local branding, and HACS metadata.
 
+[1.2.1]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.1
 [1.2.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.0
 [1.1.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.1.0
 [1.0.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.0.0

@@ -24,7 +24,7 @@ def rule_device_info(
             "homeassistant://config/integrations/integration/"
             f"{DOMAIN}#config_entry={entry.entry_id}"
         ),
-        manufacturer="Presence Auto-Off",
+        manufacturer="SmplWise (SW)",
         model="Room shutdown rule",
         name=name,
     )
