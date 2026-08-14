@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field, replace
+from datetime import timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -336,6 +337,49 @@ async def test_presence_return_cancels_pending_shutdown(
     assert controller.last_activity is not None
     assert controller.last_activity.event_type is ActivityEventType.NO_ACTION
     assert controller.last_activity.data["reason"] == "presence_returned"
+
+
+async def test_countdown_is_anchored_to_each_off_transition(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """The delay follows OFF transitions; updates do not create an interval."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(delay_seconds=600))
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    first_off_state = hass.states.get(PRESENCE_ENTITY)
+    assert first_off_state is not None
+    await hass.async_block_till_done()
+
+    first_episode_id = controller.episode_id
+    first_deadline = controller.deadline
+    assert controller.absence_started_at == first_off_state.last_changed
+    assert first_deadline == first_off_state.last_changed + timedelta(minutes=10)
+
+    # Shelly and other sensors may update attributes while remaining OFF. Such
+    # updates are not fresh absence transitions and must not restart the timer.
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF, {"signal_strength": 90})
+    await hass.async_block_till_done()
+
+    assert controller.episode_id == first_episode_id
+    assert controller.deadline == first_deadline
+    assert turn_off_recorder.calls == []
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    assert controller.deadline is None
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    second_off_state = hass.states.get(PRESENCE_ENTITY)
+    assert second_off_state is not None
+    await hass.async_block_till_done()
+
+    assert controller.episode_id != first_episode_id
+    assert controller.absence_started_at == second_off_state.last_changed
+    assert controller.deadline == second_off_state.last_changed + timedelta(minutes=10)
+    assert turn_off_recorder.calls == []
 
 
 async def test_unavailable_presence_requires_a_fresh_off_state(

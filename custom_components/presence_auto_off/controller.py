@@ -496,7 +496,9 @@ class PresenceAutoOffController:
                 elif new_value == STATE_OFF:
                     # Attribute-only updates must not restart the delay.
                     if self._episode is None:
-                        self._start_episode_locked(dt_util.utcnow())
+                        self._start_episode_locked(
+                            self._off_state_started_at(new_state)
+                        )
                     plan, due_activity = self._reconcile_episode_locked(
                         dt_util.utcnow()
                     )
@@ -536,7 +538,7 @@ class PresenceAutoOffController:
                         else Status.OCCUPIED
                     )
                 elif self._episode is None:
-                    self._start_episode_locked(dt_util.utcnow())
+                    self._start_episode_locked(self._off_state_started_at())
                     plan, activity = self._reconcile_episode_locked(dt_util.utcnow())
                 elif not self._episode.completed:
                     plan, activity = self._reconcile_episode_locked(dt_util.utcnow())
@@ -600,7 +602,7 @@ class PresenceAutoOffController:
             return None, activity
 
         if self._episode is None:
-            self._start_episode_locked(dt_util.utcnow())
+            self._start_episode_locked(self._off_state_started_at())
 
         return self._reconcile_episode_locked(dt_util.utcnow())
 
@@ -1638,19 +1640,31 @@ class PresenceAutoOffController:
         self._state_listeners.clear()
         self._activity_listeners.clear()
 
-    def _start_episode_locked(self, now: datetime) -> None:
-        """Start a new continuous-absence episode and its deadline."""
+    def _start_episode_locked(self, started_at: datetime) -> None:
+        """Start an episode at the presence sensor's OFF transition."""
         self._cancel_deadline_locked()
         self._generation += 1
-        deadline = now + timedelta(seconds=self.config.delay_seconds)
+        deadline = started_at + timedelta(seconds=self.config.delay_seconds)
         self._episode = AbsenceEpisode(
             episode_id=uuid4().hex,
             generation=self._generation,
             presence_entity=self.config.presence_entity,
-            started_at=now,
+            started_at=started_at,
             deadline=deadline,
         )
         self._blocked_episode_id = None
+
+    def _off_state_started_at(self, state: State | None = None) -> datetime:
+        """Return when the current OFF state began, failing safely on bad time."""
+        current_state = state or self.hass.states.get(self.config.presence_entity)
+        now = dt_util.utcnow()
+        if current_state is None or current_state.state != STATE_OFF:
+            return now
+
+        changed_at = dt_util.as_utc(current_state.last_changed)
+        # A future timestamp caused by clock skew must never postpone shutdown
+        # beyond the full configured delay measured from the present.
+        return min(changed_at, now)
 
     def _clear_episode_locked(self) -> None:
         """Invalidate and clear the current absence episode."""

@@ -2,6 +2,19 @@
 
 All notable changes to SmplWise Presence Auto-Off are documented here.
 
+## [1.2.2] - 2026-08-14
+
+### Fixed
+
+- Anchored every shutdown deadline to the presence sensor's actual transition to
+  `off`, including setup and reload reconciliation.
+- Confirmed that attribute-only sensor updates do not restart the countdown and
+  that completed absence episodes never behave as a repeating interval.
+
+### Changed
+
+- Clarified the current-absence and last-executed shutdown entity names.
+
 ## [1.2.1] - 2026-08-14
 
 ### Changed
@@ -42,6 +55,7 @@ All notable changes to SmplWise Presence Auto-Off are documented here.
 - Status, day-type, next-run, last-run, enabled, allowed, and activity entities.
 - Hebrew and English translations, diagnostics, local branding, and HACS metadata.
 
+[1.2.2]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.2
 [1.2.1]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.1
 [1.2.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.0
 [1.1.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.1.0

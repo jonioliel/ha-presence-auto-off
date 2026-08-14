@@ -38,7 +38,7 @@
           "restore_on_presence": "Restore previous state when presence returns"
         },
         "data_description": {
-          "delay": "How long the room must remain empty before entities are turned off.",
+          "delay": "Continuous time without presence before shutdown. The countdown starts when the presence sensor changes to off; attribute updates do not restart it, and it is not an interval.",
           "shabbat_entity": "On means Shabbat/special day; off means an ordinary day unless Holiday is on.",
           "holiday_entity": "On means holiday and overrides the Shabbat sensor.",
           "allowed_day_types": "These day types gate shutdown and restoration. A blocked shutdown waits while the room is empty; restoration is checked once when presence returns and only runs if currently allowed.",
@@ -96,7 +96,7 @@
           "restore_on_presence": "Restore previous state when presence returns"
         },
         "data_description": {
-          "delay": "How long the room must remain empty before entities are turned off.",
+          "delay": "Continuous time without presence before shutdown. The countdown starts when the presence sensor changes to off; attribute updates do not restart it, and it is not an interval.",
           "shabbat_entity": "On means Shabbat/special day; off means an ordinary day unless Holiday is on.",
           "holiday_entity": "On means holiday and overrides the Shabbat sensor.",
           "allowed_day_types": "These day types gate shutdown and restoration. A blocked shutdown waits while the room is empty; restoration is checked once when presence returns and only runs if currently allowed.",
@@ -163,10 +163,10 @@
         }
       },
       "next_shutdown": {
-        "name": "Next shutdown"
+        "name": "Scheduled shutdown for current absence"
       },
       "last_shutdown": {
-        "name": "Last shutdown"
+        "name": "Last executed shutdown"
       },
       "last_restoration": {
         "name": "Last restoration"
