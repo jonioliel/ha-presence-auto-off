@@ -44,6 +44,7 @@ from .const import (
     DEFAULT_DELAY_SECONDS,
     DOMAIN,
 )
+from .helpers import effective_area_id
 from .models import DayType
 
 CONF_DELAY = "delay"
@@ -150,7 +151,7 @@ def _turn_off_entities_in_area(
         entry.entity_id
         for entry in entity_registry.entities.values()
         if not entry.disabled
-        and er.async_get_effective_area_id(hass, entry) == area_id
+        and effective_area_id(hass, entry) == area_id
         and hass.services.has_service(
             split_entity_id(entry.entity_id)[0], SERVICE_TURN_OFF
         )

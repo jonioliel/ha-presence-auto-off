@@ -45,6 +45,7 @@ from .const import (
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
 )
+from .helpers import effective_area_id
 from .models import (
     ALL_DAY_TYPES,
     AbsenceEpisode,
@@ -670,8 +671,7 @@ class PresenceAutoOffController:
             return "disabled"
         if (
             self.config.area_id is None
-            or er.async_get_effective_area_id(self.hass, registry_entry)
-            != self.config.area_id
+            or effective_area_id(self.hass, registry_entry) != self.config.area_id
         ):
             return "out_of_area"
         if not self.hass.services.has_service(domain, SERVICE_TURN_OFF):
