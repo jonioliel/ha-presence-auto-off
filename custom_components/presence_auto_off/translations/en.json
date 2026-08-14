@@ -5,7 +5,7 @@
     "step": {
       "user": {
         "title": "Create a room rule",
-        "description": "Choose a Home Assistant area and its presence binary sensor. Shelly sensors are supported through their regular Home Assistant entity.",
+        "description": "Choose a Home Assistant area and its presence binary sensor. Select Submit to continue to a second step. The area only filters the choices there: ONLY entities you explicitly select in that step will be controlled.",
         "data": {
           "name": "Rule name",
           "area_id": "Room (area)",
@@ -13,34 +13,36 @@
         },
         "data_description": {
           "name": "Usually the room name or the room and person's name.",
-          "area_id": "Only switchable entities assigned to this area will be offered next.",
-          "presence_entity": "The binary sensor must be on while presence is detected and off when the room is empty."
+          "area_id": "Only switchable entities assigned to this area will be offered next; choosing the area does not select them.",
+          "presence_entity": "The binary sensor must be on while presence is detected and off when the room is empty. Shelly sensors are supported through their regular Home Assistant entity."
         }
       },
       "targets": {
         "title": "Choose what to turn off",
-        "description": "Only explicitly selected entities are controlled. Adding another device to the area later will not turn it off automatically.",
+        "description": "Select the entities this rule may control. Unselected entities are NEVER touched, including other entities in this area and entities added to it later. A selected Home Assistant group can control all its members, so select a group only if every member should be controlled.",
         "data": {
           "target_entities": "Entities to turn off"
         },
         "data_description": {
-          "target_entities": "The list includes entities in the selected area whose domain currently provides a turn-off action."
+          "target_entities": "The Add dropdown shows available candidates, not selected targets. An entity is controlled only after you add it to the selected list."
         }
       },
       "conditions": {
-        "title": "Delay and day conditions",
-        "description": "Holiday takes priority when both day sensors are on. If you use one combined ‘Shabbat or holiday’ sensor, select it as the Shabbat sensor and leave Holiday empty. An unavailable configured day sensor blocks shutdown unless every day type is allowed.",
+        "title": "Delay, day conditions, and restoration",
+        "description": "Shabbat and holiday sensors are optional when every day type is allowed. Holiday takes priority when both are on. For one combined ‘Shabbat or holiday’ sensor, use the Shabbat field and leave Holiday empty. An unavailable configured day sensor blocks a day-restricted shutdown or restoration.",
         "data": {
           "delay": "No-presence delay",
           "shabbat_entity": "Shabbat or combined special-day sensor (optional)",
           "holiday_entity": "Holiday sensor (optional)",
-          "allowed_day_types": "Allow shutdown on"
+          "allowed_day_types": "Allow automatic actions on",
+          "restore_on_presence": "Restore previous state when presence returns"
         },
         "data_description": {
           "delay": "How long the room must remain empty before entities are turned off.",
           "shabbat_entity": "On means Shabbat/special day; off means an ordinary day unless Holiday is on.",
           "holiday_entity": "On means holiday and overrides the Shabbat sensor.",
-          "allowed_day_types": "When the deadline passes on a blocked day, the rule waits and runs if the day later becomes allowed while the room is still empty."
+          "allowed_day_types": "These day types gate shutdown and restoration. A blocked shutdown waits while the room is empty; restoration is checked once when presence returns and only runs if currently allowed.",
+          "restore_on_presence": "When enabled, the rule saves the state of selected entities at shutdown and restores only entities that it successfully turned off. Restoration also requires the current day type to be allowed."
         }
       }
     },
@@ -61,7 +63,7 @@
     "step": {
       "init": {
         "title": "Edit the room rule",
-        "description": "Change the area or presence binary sensor used by this rule.",
+        "description": "Change the area or presence binary sensor, then select Submit to continue. The area only filters the second-step choices: ONLY entities explicitly selected there will be controlled.",
         "data": {
           "name": "Rule name",
           "area_id": "Room (area)",
@@ -69,34 +71,36 @@
         },
         "data_description": {
           "name": "Usually the room name or the room and person's name.",
-          "area_id": "Only switchable entities assigned to this area will be offered next.",
+          "area_id": "Only switchable entities assigned to this area will be offered next; choosing the area does not select them.",
           "presence_entity": "The binary sensor must be on while presence is detected and off when the room is empty."
         }
       },
       "targets": {
         "title": "Edit controlled entities",
-        "description": "Only explicitly selected entities are controlled.",
+        "description": "Select the entities this rule may control. Unselected entities are NEVER touched, including other entities in this area and entities added to it later. A selected Home Assistant group can control all its members, so select a group only if every member should be controlled.",
         "data": {
           "target_entities": "Entities to turn off"
         },
         "data_description": {
-          "target_entities": "The list includes entities in the selected area whose domain currently provides a turn-off action."
+          "target_entities": "The Add dropdown shows available candidates, not selected targets. An entity is controlled only after you add it to the selected list."
         }
       },
       "conditions": {
-        "title": "Edit delay and day conditions",
-        "description": "Holiday takes priority when both day sensors are on. An unavailable configured day sensor blocks shutdown unless every day type is allowed.",
+        "title": "Edit delay, day conditions, and restoration",
+        "description": "Shabbat and holiday sensors are optional when every day type is allowed. Holiday takes priority when both are on. For one combined sensor, use the Shabbat field and leave Holiday empty. An unavailable configured day sensor blocks a day-restricted shutdown or restoration.",
         "data": {
           "delay": "No-presence delay",
           "shabbat_entity": "Shabbat or combined special-day sensor (optional)",
           "holiday_entity": "Holiday sensor (optional)",
-          "allowed_day_types": "Allow shutdown on"
+          "allowed_day_types": "Allow automatic actions on",
+          "restore_on_presence": "Restore previous state when presence returns"
         },
         "data_description": {
           "delay": "How long the room must remain empty before entities are turned off.",
           "shabbat_entity": "On means Shabbat/special day; off means an ordinary day unless Holiday is on.",
           "holiday_entity": "On means holiday and overrides the Shabbat sensor.",
-          "allowed_day_types": "A blocked rule waits until the day becomes allowed while the room remains empty."
+          "allowed_day_types": "These day types gate shutdown and restoration. A blocked shutdown waits while the room is empty; restoration is checked once when presence returns and only runs if currently allowed.",
+          "restore_on_presence": "When enabled, the rule saves the state of selected entities at shutdown and restores only entities that it successfully turned off. Restoration also requires the current day type to be allowed."
         }
       }
     },
@@ -143,6 +147,7 @@
           "countdown": "Waiting for no-presence delay",
           "waiting_condition": "Waiting for an allowed day",
           "executing": "Turning entities off",
+          "restoring": "Restoring previous states",
           "completed": "Shutdown completed",
           "sensor_unavailable": "Required sensor unavailable",
           "error": "Error"
@@ -162,18 +167,24 @@
       },
       "last_shutdown": {
         "name": "Last shutdown"
+      },
+      "last_restoration": {
+        "name": "Last restoration"
       }
     },
     "event": {
       "activity": {
-        "name": "Shutdown activity",
+        "name": "Rule activity",
         "state_attributes": {
           "event_type": {
             "state": {
               "executed": "Shutdown executed",
               "no_action": "No action needed",
               "blocked": "Shutdown blocked",
-              "failed": "Shutdown failed"
+              "failed": "Shutdown failed",
+              "restored": "Previous state restored",
+              "restore_skipped": "Restoration skipped",
+              "restore_failed": "Restoration failed"
             }
           }
         }

@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant, callback, split_entity_id
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     AreaSelector,
+    BooleanSelector,
     DurationSelector,
     DurationSelectorConfig,
     EntitySelector,
@@ -38,10 +39,12 @@ from .const import (
     CONF_HOLIDAY_ENTITY,
     CONF_NAME,
     CONF_PRESENCE_ENTITY,
+    CONF_RESTORE_ON_PRESENCE,
     CONF_RULE_ID,
     CONF_SHABBAT_ENTITY,
     CONF_TARGET_ENTITIES,
     DEFAULT_DELAY_SECONDS,
+    DEFAULT_RESTORE_ON_PRESENCE,
     DOMAIN,
 )
 from .helpers import effective_area_id
@@ -124,6 +127,36 @@ def _resolve_entity_ids(
 
 
 @callback
+def _display_entity_id(
+    hass: HomeAssistant, entity_id_or_uuid: str | None
+) -> str | None:
+    """Return the current entity ID used by frontend entity pickers."""
+    if not entity_id_or_uuid:
+        return None
+    return _resolve_entity_id(hass, entity_id_or_uuid) or entity_id_or_uuid
+
+
+@callback
+def _display_entity_ids(
+    hass: HomeAssistant, entity_ids_or_uuids: list[str]
+) -> list[str]:
+    """Return de-duplicated current IDs for a multiple entity picker."""
+    displayed: list[str] = []
+    for entity_id_or_uuid in entity_ids_or_uuids:
+        entity_id = _display_entity_id(hass, entity_id_or_uuid)
+        if entity_id is not None and entity_id not in displayed:
+            displayed.append(entity_id)
+    return displayed
+
+
+@callback
+def _canonical_entity_reference(hass: HomeAssistant, entity_id: str) -> str:
+    """Return a rename-safe registry reference when one is available."""
+    registry_entry = er.async_get(hass).async_get(entity_id)
+    return registry_entry.id if registry_entry is not None else entity_id
+
+
+@callback
 def _resolve_binary_sensor(
     hass: HomeAssistant, entity_id_or_uuid: str | None
 ) -> tuple[str | None, str | None]:
@@ -185,6 +218,9 @@ class _RuleFlowMixin:
     _working: dict[str, Any]
 
     def _room_schema(self) -> vol.Schema:
+        presence_entity = _display_entity_id(
+            self.hass, self._working.get(CONF_PRESENCE_ENTITY)
+        )
         return vol.Schema(
             {
                 vol.Required(
@@ -196,7 +232,7 @@ class _RuleFlowMixin:
                 ): AreaSelector(),
                 _required_marker(
                     CONF_PRESENCE_ENTITY,
-                    self._working.get(CONF_PRESENCE_ENTITY),
+                    presence_entity,
                 ): _BINARY_SENSOR_SELECTOR,
             }
         )
@@ -208,7 +244,9 @@ class _RuleFlowMixin:
             # which would expose every entity in Home Assistant.
             return vol.Schema({})
 
-        selected = list(self._working.get(CONF_TARGET_ENTITIES, []))
+        selected = _display_entity_ids(
+            self.hass, list(self._working.get(CONF_TARGET_ENTITIES, []))
+        )
         return vol.Schema(
             {
                 vol.Required(
@@ -225,8 +263,8 @@ class _RuleFlowMixin:
         )
 
     def _conditions_schema(self) -> vol.Schema:
-        shabbat = self._working.get(CONF_SHABBAT_ENTITY)
-        holiday = self._working.get(CONF_HOLIDAY_ENTITY)
+        shabbat = _display_entity_id(self.hass, self._working.get(CONF_SHABBAT_ENTITY))
+        holiday = _display_entity_id(self.hass, self._working.get(CONF_HOLIDAY_ENTITY))
         return vol.Schema(
             {
                 vol.Required(
@@ -249,6 +287,16 @@ class _RuleFlowMixin:
                         self._working.get(CONF_ALLOWED_DAY_TYPES, ALL_DAY_TYPES)
                     ),
                 ): _DAY_TYPES_SELECTOR,
+                vol.Required(
+                    CONF_RESTORE_ON_PRESENCE,
+                    default=(
+                        self._working.get(
+                            CONF_RESTORE_ON_PRESENCE,
+                            DEFAULT_RESTORE_ON_PRESENCE,
+                        )
+                        is True
+                    ),
+                ): BooleanSelector(),
             }
         )
 
@@ -269,15 +317,16 @@ class _RuleFlowMixin:
         if errors:
             return errors
 
+        assert presence_entity is not None
         self._working.update(user_input)
         self._working[CONF_NAME] = name
         if previous_area is not None and previous_area != user_input[CONF_AREA_ID]:
             # Targets are an explicit safety boundary. Never carry selections
             # from an old room into a newly selected area.
             self._working.pop(CONF_TARGET_ENTITIES, None)
-        # Keep the selector reference (which may be a registry UUID) so entity
-        # renames remain trackable. Runtime setup resolves it to an entity ID.
-        self._working[CONF_PRESENCE_ENTITY] = presence_reference
+        self._working[CONF_PRESENCE_ENTITY] = _canonical_entity_reference(
+            self.hass, presence_entity
+        )
         return errors
 
     def _accept_targets(self, user_input: dict[str, Any]) -> dict[str, str]:
@@ -297,8 +346,9 @@ class _RuleFlowMixin:
         if not set(targets) <= allowed_targets:
             return {CONF_TARGET_ENTITIES: "target_not_allowed"}
 
-        # Preserve registry UUIDs for rename-safe persisted configuration.
-        self._working[CONF_TARGET_ENTITIES] = raw_targets
+        self._working[CONF_TARGET_ENTITIES] = [
+            _canonical_entity_reference(self.hass, entity_id) for entity_id in targets
+        ]
         return {}
 
     def _accept_conditions(self, user_input: dict[str, Any]) -> dict[str, str]:
@@ -329,12 +379,23 @@ class _RuleFlowMixin:
 
         self._working[CONF_DELAY_SECONDS] = delay_seconds
         self._working[CONF_ALLOWED_DAY_TYPES] = allowed
+        self._working[CONF_RESTORE_ON_PRESENCE] = (
+            user_input.get(
+                CONF_RESTORE_ON_PRESENCE,
+                DEFAULT_RESTORE_ON_PRESENCE,
+            )
+            is True
+        )
         self._working.pop(CONF_SHABBAT_ENTITY, None)
         self._working.pop(CONF_HOLIDAY_ENTITY, None)
-        if shabbat_reference:
-            self._working[CONF_SHABBAT_ENTITY] = shabbat_reference
-        if holiday_reference:
-            self._working[CONF_HOLIDAY_ENTITY] = holiday_reference
+        if shabbat is not None:
+            self._working[CONF_SHABBAT_ENTITY] = _canonical_entity_reference(
+                self.hass, shabbat
+            )
+        if holiday is not None:
+            self._working[CONF_HOLIDAY_ENTITY] = _canonical_entity_reference(
+                self.hass, holiday
+            )
         return {}
 
 

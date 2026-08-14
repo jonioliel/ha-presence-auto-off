@@ -32,6 +32,7 @@ async def async_setup_entry(
             PresenceAutoOffDayTypeSensor(entry),
             PresenceAutoOffNextShutdownSensor(entry),
             PresenceAutoOffLastShutdownSensor(entry),
+            PresenceAutoOffLastRestorationSensor(entry),
         )
     )
 
@@ -102,3 +103,21 @@ class PresenceAutoOffLastShutdownSensor(PresenceAutoOffEntity, SensorEntity):
         if (execution := self.controller.last_execution) is None:
             return None
         return execution.occurred_at
+
+
+class PresenceAutoOffLastRestorationSensor(PresenceAutoOffEntity, SensorEntity):
+    """Expose the time of the latest presence-triggered restoration."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, entry: PresenceAutoOffConfigEntry) -> None:
+        """Initialize the last-restoration sensor."""
+        super().__init__(entry, "last_restoration", "last_restoration")
+
+    @property
+    @override
+    def native_value(self) -> datetime | None:
+        """Return the latest restoration timestamp, if available."""
+        if (restoration := self.controller.last_restoration) is None:
+            return None
+        return restoration.occurred_at

@@ -14,11 +14,13 @@ CONF_TARGET_ENTITIES: Final = "target_entities"
 CONF_SHABBAT_ENTITY: Final = "shabbat_entity"
 CONF_HOLIDAY_ENTITY: Final = "holiday_entity"
 CONF_ALLOWED_DAY_TYPES: Final = "allowed_day_types"
+CONF_RESTORE_ON_PRESENCE: Final = "restore_on_presence"
 CONF_RULE_ID: Final = "rule_id"
 
 DEFAULT_NAME: Final = "Presence Auto-Off"
 DEFAULT_DELAY_SECONDS: Final = 600
 DEFAULT_ENABLED: Final = True
+DEFAULT_RESTORE_ON_PRESENCE: Final = False
 DEFAULT_ALLOWED_DAY_TYPES: Final[tuple[str, str, str]] = (
     "ordinary",
     "shabbat",
