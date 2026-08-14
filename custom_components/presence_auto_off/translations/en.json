@@ -1,0 +1,183 @@
+{
+  "title": "Presence Auto-Off",
+  "config": {
+    "flow_title": "Presence Auto-Off: {name}",
+    "step": {
+      "user": {
+        "title": "Create a room rule",
+        "description": "Choose a Home Assistant area and its presence binary sensor. Shelly sensors are supported through their regular Home Assistant entity.",
+        "data": {
+          "name": "Rule name",
+          "area_id": "Room (area)",
+          "presence_entity": "Presence sensor"
+        },
+        "data_description": {
+          "name": "Usually the room name or the room and person's name.",
+          "area_id": "Only switchable entities assigned to this area will be offered next.",
+          "presence_entity": "The binary sensor must be on while presence is detected and off when the room is empty."
+        }
+      },
+      "targets": {
+        "title": "Choose what to turn off",
+        "description": "Only explicitly selected entities are controlled. Adding another device to the area later will not turn it off automatically.",
+        "data": {
+          "target_entities": "Entities to turn off"
+        },
+        "data_description": {
+          "target_entities": "The list includes entities in the selected area whose domain currently provides a turn-off action."
+        }
+      },
+      "conditions": {
+        "title": "Delay and day conditions",
+        "description": "Holiday takes priority when both day sensors are on. If you use one combined ‘Shabbat or holiday’ sensor, select it as the Shabbat sensor and leave Holiday empty. An unavailable configured day sensor blocks shutdown unless every day type is allowed.",
+        "data": {
+          "delay": "No-presence delay",
+          "shabbat_entity": "Shabbat or combined special-day sensor (optional)",
+          "holiday_entity": "Holiday sensor (optional)",
+          "allowed_day_types": "Allow shutdown on"
+        },
+        "data_description": {
+          "delay": "How long the room must remain empty before entities are turned off.",
+          "shabbat_entity": "On means Shabbat/special day; off means an ordinary day unless Holiday is on.",
+          "holiday_entity": "On means holiday and overrides the Shabbat sensor.",
+          "allowed_day_types": "When the deadline passes on a blocked day, the rule waits and runs if the day later becomes allowed while the room is still empty."
+        }
+      }
+    },
+    "error": {
+      "name_required": "Enter a rule name",
+      "targets_required": "Select at least one entity",
+      "no_supported_entities": "No entities with a turn-off action are assigned to this area. Assign devices to the area in Home Assistant and try again.",
+      "invalid_delay": "Choose a delay between 0 seconds and 30 days",
+      "day_type_required": "Select at least one day type",
+      "same_gate_entity": "Choose different sensors for Shabbat and holiday",
+      "gate_required": "Choose a Shabbat/holiday sensor, or allow all day types",
+      "entity_not_found": "The selected entity no longer exists. Choose it again.",
+      "invalid_binary_sensor": "Choose a binary sensor entity.",
+      "target_not_allowed": "Choose only entities from this room that support turn off."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Edit the room rule",
+        "description": "Change the area or presence binary sensor used by this rule.",
+        "data": {
+          "name": "Rule name",
+          "area_id": "Room (area)",
+          "presence_entity": "Presence sensor"
+        },
+        "data_description": {
+          "name": "Usually the room name or the room and person's name.",
+          "area_id": "Only switchable entities assigned to this area will be offered next.",
+          "presence_entity": "The binary sensor must be on while presence is detected and off when the room is empty."
+        }
+      },
+      "targets": {
+        "title": "Edit controlled entities",
+        "description": "Only explicitly selected entities are controlled.",
+        "data": {
+          "target_entities": "Entities to turn off"
+        },
+        "data_description": {
+          "target_entities": "The list includes entities in the selected area whose domain currently provides a turn-off action."
+        }
+      },
+      "conditions": {
+        "title": "Edit delay and day conditions",
+        "description": "Holiday takes priority when both day sensors are on. An unavailable configured day sensor blocks shutdown unless every day type is allowed.",
+        "data": {
+          "delay": "No-presence delay",
+          "shabbat_entity": "Shabbat or combined special-day sensor (optional)",
+          "holiday_entity": "Holiday sensor (optional)",
+          "allowed_day_types": "Allow shutdown on"
+        },
+        "data_description": {
+          "delay": "How long the room must remain empty before entities are turned off.",
+          "shabbat_entity": "On means Shabbat/special day; off means an ordinary day unless Holiday is on.",
+          "holiday_entity": "On means holiday and overrides the Shabbat sensor.",
+          "allowed_day_types": "A blocked rule waits until the day becomes allowed while the room remains empty."
+        }
+      }
+    },
+    "error": {
+      "name_required": "Enter a rule name",
+      "targets_required": "Select at least one entity",
+      "no_supported_entities": "No entities with a turn-off action are assigned to this area. Assign devices to the area in Home Assistant and try again.",
+      "invalid_delay": "Choose a delay between 0 seconds and 30 days",
+      "day_type_required": "Select at least one day type",
+      "same_gate_entity": "Choose different sensors for Shabbat and holiday",
+      "gate_required": "Choose a Shabbat/holiday sensor, or allow all day types",
+      "entity_not_found": "The selected entity no longer exists. Choose it again.",
+      "invalid_binary_sensor": "Choose a binary sensor entity.",
+      "target_not_allowed": "Choose only entities from this room that support turn off."
+    }
+  },
+  "selector": {
+    "day_type": {
+      "options": {
+        "ordinary": "Ordinary day",
+        "shabbat": "Shabbat / combined special day",
+        "holiday": "Holiday"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "enabled": {
+        "name": "Automatic shutdown"
+      }
+    },
+    "binary_sensor": {
+      "shutdown_allowed": {
+        "name": "Shutdown allowed"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "initializing": "Initializing",
+          "disabled": "Disabled",
+          "occupied": "Presence detected",
+          "countdown": "Waiting for no-presence delay",
+          "waiting_condition": "Waiting for an allowed day",
+          "executing": "Turning entities off",
+          "completed": "Shutdown completed",
+          "sensor_unavailable": "Required sensor unavailable",
+          "error": "Error"
+        }
+      },
+      "day_type": {
+        "name": "Current day type",
+        "state": {
+          "ordinary": "Ordinary day",
+          "shabbat": "Shabbat / combined special day",
+          "holiday": "Holiday",
+          "unknown": "Unknown"
+        }
+      },
+      "next_shutdown": {
+        "name": "Next shutdown"
+      },
+      "last_shutdown": {
+        "name": "Last shutdown"
+      }
+    },
+    "event": {
+      "activity": {
+        "name": "Shutdown activity",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "executed": "Shutdown executed",
+              "no_action": "No action needed",
+              "blocked": "Shutdown blocked",
+              "failed": "Shutdown failed"
+            }
+          }
+        }
+      }
+    }
+  }
+}

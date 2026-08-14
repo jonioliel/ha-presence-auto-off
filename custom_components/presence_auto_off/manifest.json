@@ -1,0 +1,12 @@
+{
+  "domain": "presence_auto_off",
+  "name": "Presence Auto-Off",
+  "codeowners": ["@jonioliel"],
+  "config_flow": true,
+  "documentation": "https://github.com/jonioliel/ha-presence-auto-off",
+  "integration_type": "helper",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/jonioliel/ha-presence-auto-off/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
