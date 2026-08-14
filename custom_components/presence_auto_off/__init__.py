@@ -9,6 +9,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
@@ -18,6 +19,7 @@ from .const import (
     CONF_TARGET_ENTITIES,
 )
 from .controller import PresenceAutoOffController
+from .device import rule_device_info
 from .models import RuleConfig
 
 PLATFORMS: list[Platform] = [
@@ -72,6 +74,15 @@ async def async_setup_entry(
         RuleConfig.from_mapping(_resolve_runtime_config(hass, entry)),
     )
     entry.runtime_data = controller
+
+    # Register the rule as a first-class integration device before its
+    # platforms load. Entity device_info uses the same stable identifier, so
+    # every generated entity is attached to this exact device. Explicit
+    # registration also keeps the device visible when users disable entities.
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        **rule_device_info(entry, controller.config.name),
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     try:

@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.core import callback
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 
 from . import PresenceAutoOffConfigEntry
-from .const import CONF_AREA_ID, CONF_NAME, CONF_RULE_ID, DOMAIN
+from .const import CONF_AREA_ID, CONF_NAME, CONF_RULE_ID
 from .controller import PresenceAutoOffController
+from .device import rule_device_info
 
 
 class PresenceAutoOffEntity(Entity):
@@ -30,11 +30,9 @@ class PresenceAutoOffEntity(Entity):
         rule_id = str(entry.data[CONF_RULE_ID])
         self._attr_unique_id = f"{rule_id}_{key}"
         self._attr_translation_key = translation_key
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, rule_id)},
-            manufacturer="Presence Auto-Off",
-            model="Room shutdown rule",
-            name=str(self.controller.config.name),
+        self._attr_device_info = rule_device_info(
+            entry,
+            str(self.controller.config.name),
         )
 
     async def async_added_to_hass(self) -> None:

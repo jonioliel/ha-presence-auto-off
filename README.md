@@ -1,5 +1,9 @@
 # Presence Auto-Off for Home Assistant
 
+> כל כלל חדר נרשם כ־Device תחת האינטגרציה Presence Auto-Off. כל ישויות
+> השליטה והסטטוס משויכות אליו, ופעולת ההגדרה בדף ה־Device פותחת את כלל החדר
+> המתאים לעריכה. הישויות אינן מסווגות עוד תחת Helpers.
+
 אינטגרציה ל־Home Assistant שמכבה רכיבים בחדר לאחר זמן מוגדר ללא נוכחות. היא נבנתה במיוחד לתרחיש של חיישני Shelly Presence, אך עובדת עם כל `binary_sensor` של Home Assistant שמחזיר `on` כשיש נוכחות ו־`off` כשהחדר ריק.
 
 ההגדרה מתבצעת במלואה דרך ממשק Home Assistant — ללא YAML.

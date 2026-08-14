@@ -2,6 +2,14 @@
 
 All notable changes to Presence Auto-Off are documented here.
 
+## [1.2.0] - 2026-08-14
+
+### Fixed
+
+- Room rules are now registered as first-class integration devices instead of helpers.
+- Every generated status, control, and activity entity is attached to its room-rule device.
+- Each room-rule device includes a Home Assistant configuration link back to its highlighted config entry.
+
 ## [1.1.0] - 2026-08-14
 
 ### Added
@@ -27,5 +35,6 @@ All notable changes to Presence Auto-Off are documented here.
 - Status, day-type, next-run, last-run, enabled, allowed, and activity entities.
 - Hebrew and English translations, diagnostics, local branding, and HACS metadata.
 
+[1.2.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.0
 [1.1.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.1.0
 [1.0.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.0.0

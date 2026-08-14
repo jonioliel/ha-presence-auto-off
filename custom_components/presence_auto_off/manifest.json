@@ -4,9 +4,9 @@
   "codeowners": ["@jonioliel"],
   "config_flow": true,
   "documentation": "https://github.com/jonioliel/ha-presence-auto-off",
-  "integration_type": "helper",
+  "integration_type": "device",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/jonioliel/ha-presence-auto-off/issues",
   "requirements": [],
-  "version": "1.1.0"
+  "version": "1.2.0"
 }
