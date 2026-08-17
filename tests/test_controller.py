@@ -339,7 +339,7 @@ async def test_recurring_enforcement_turns_remote_reactivation_off(
     assert controller.episode_id == episode_id
     second_deadline = controller.deadline
     assert second_deadline is not None
-    assert second_deadline > first_deadline
+    assert second_deadline >= first_deadline + timedelta(minutes=10)
     assert controller.status is Status.COMPLETED
 
     # A remote action while the room is still empty is enforced at the next

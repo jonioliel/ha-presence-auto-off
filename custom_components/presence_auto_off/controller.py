@@ -689,7 +689,7 @@ class PresenceAutoOffController:
                 },
             )
 
-        completed_at = dt_util.utcnow()
+        completed_at = now
         self._episode = replace(episode, completed=True, completed_at=completed_at)
         self._status = Status.EXECUTING
         self._blocked_episode_id = None
@@ -952,7 +952,9 @@ class PresenceAutoOffController:
                 and not self._unloaded
             ):
                 self._status = Status.ERROR if failed else Status.COMPLETED
-                self._arm_next_enforcement_locked(dt_util.utcnow())
+                self._arm_next_enforcement_locked(
+                    max(plan.started_at, dt_util.utcnow())
+                )
             activity = self._new_activity_locked(
                 event_type,
                 {
