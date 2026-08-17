@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -206,6 +206,16 @@ def _rule_config(
     )
 
 
+async def _async_reach_deadline(
+    controller: PresenceAutoOffController, deadline: datetime
+) -> None:
+    """Fire a deadline directly after removing its real event-loop timer."""
+    assert controller._episode is not None
+    generation = controller._episode.generation
+    controller._cancel_deadline_locked()
+    await controller._async_deadline_reached(generation, deadline)
+
+
 async def test_setup_save_failure_removes_all_live_callbacks(
     hass: HomeAssistant,
     turn_off_recorder: TurnOffRecorder,
@@ -329,9 +339,7 @@ async def test_recurring_enforcement_turns_remote_reactivation_off(
     assert first_deadline is not None
     assert controller._episode is not None
 
-    await controller._async_deadline_reached(
-        controller._episode.generation, first_deadline
-    )
+    await _async_reach_deadline(controller, first_deadline)
 
     assert turn_off_recorder.calls == [DEFAULT_TARGET]
     assert hass.states.get(DEFAULT_TARGET) is not None
@@ -346,9 +354,7 @@ async def test_recurring_enforcement_turns_remote_reactivation_off(
     # interval, without requiring a new presence transition.
     hass.states.async_set(DEFAULT_TARGET, STATE_ON)
     assert controller._episode is not None
-    await controller._async_deadline_reached(
-        controller._episode.generation, second_deadline
-    )
+    await _async_reach_deadline(controller, second_deadline)
 
     assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
     assert hass.states.get(DEFAULT_TARGET) is not None
@@ -359,9 +365,7 @@ async def test_recurring_enforcement_turns_remote_reactivation_off(
     # If everything is already off, the interval records a check without
     # issuing redundant turn_off service calls, then schedules another check.
     assert controller._episode is not None
-    await controller._async_deadline_reached(
-        controller._episode.generation, third_deadline
-    )
+    await _async_reach_deadline(controller, third_deadline)
 
     assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
     assert controller.last_activity is not None
@@ -394,9 +398,7 @@ async def test_recurring_enforcement_refreshes_restore_snapshot(
     assert controller._episode is not None
     first_deadline = controller.deadline
     assert first_deadline is not None
-    await controller._async_deadline_reached(
-        controller._episode.generation, first_deadline
-    )
+    await _async_reach_deadline(controller, first_deadline)
     await hass.async_block_till_done()
 
     hass.states.async_set(DEFAULT_TARGET, STATE_ON, {"brightness": 55})
@@ -404,9 +406,7 @@ async def test_recurring_enforcement_refreshes_restore_snapshot(
     recurring_deadline = controller.deadline
     assert recurring_deadline is not None
     assert controller._episode is not None
-    await controller._async_deadline_reached(
-        controller._episode.generation, recurring_deadline
-    )
+    await _async_reach_deadline(controller, recurring_deadline)
     await hass.async_block_till_done()
 
     assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
@@ -774,7 +774,7 @@ async def test_recurring_deadline_survives_restart_without_immediate_duplicate(
     first_deadline = first.deadline
     assert first._episode is not None
     assert first_deadline is not None
-    await first._async_deadline_reached(first._episode.generation, first_deadline)
+    await _async_reach_deadline(first, first_deadline)
     recurring_deadline = first.deadline
 
     assert first.status is Status.COMPLETED
@@ -793,9 +793,7 @@ async def test_recurring_deadline_survives_restart_without_immediate_duplicate(
 
     hass.states.async_set(DEFAULT_TARGET, STATE_ON)
     assert restarted._episode is not None
-    await restarted._async_deadline_reached(
-        restarted._episode.generation, recurring_deadline
-    )
+    await _async_reach_deadline(restarted, recurring_deadline)
     assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
 
 
