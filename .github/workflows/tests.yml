@@ -25,4 +25,22 @@ jobs:
       - name: Ruff format
         run: ruff format --check custom_components tests
       - name: Tests
-        run: python -m pytest
+        shell: bash
+        run: |
+          set +e
+          python -m pytest --tb=short 2>&1 | tee pytest-output.log
+          status=${PIPESTATUS[0]}
+          if [[ "$status" -ne 0 ]]; then
+            {
+              echo "### Pytest failure"
+              echo '```text'
+              tail -n 120 pytest-output.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            details="$(tail -n 80 pytest-output.log)"
+            details="${details//'%'/'%25'}"
+            details="${details//$'\n'/'%0A'}"
+            details="${details//$'\r'/'%0D'}"
+            echo "::error title=Pytest failures::$details"
+          fi
+          exit "$status"
