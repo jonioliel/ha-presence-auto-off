@@ -2,6 +2,23 @@
 
 All notable changes to SmplWise Presence Auto-Off are documented here.
 
+## [1.3.0] - 2026-08-17
+
+### Added
+
+- While presence remains `off`, the rule now checks the explicitly selected
+  targets again after every configured no-presence interval.
+- A target turned on remotely in an empty room is turned off at the next
+  interval, subject to the same enable, day-gate, area, identity, and
+  availability checks.
+
+### Changed
+
+- Targets that are already off are detected without sending redundant
+  `turn_off` service calls.
+- The next-check deadline survives reloads and restarts, and presence returning
+  cancels the recurring enforcement immediately.
+
 ## [1.2.2] - 2026-08-14
 
 ### Fixed
@@ -56,6 +73,7 @@ All notable changes to SmplWise Presence Auto-Off are documented here.
 - Hebrew and English translations, diagnostics, local branding, and HACS metadata.
 
 [1.2.2]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.2
+[1.3.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.3.0
 [1.2.1]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.1
 [1.2.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.2.0
 [1.1.0]: https://github.com/jonioliel/ha-presence-auto-off/releases/tag/v1.1.0

@@ -313,6 +313,113 @@ async def test_immediate_absence_executes_once(
     assert controller.last_activity.event_type is ActivityEventType.EXECUTED
 
 
+async def test_recurring_enforcement_turns_remote_reactivation_off(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """An empty room is rechecked every delay until presence returns."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(delay_seconds=600))
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    episode_id = controller.episode_id
+    first_deadline = controller.deadline
+    assert first_deadline is not None
+    assert controller._episode is not None
+
+    await controller._async_deadline_reached(
+        controller._episode.generation, first_deadline
+    )
+
+    assert turn_off_recorder.calls == [DEFAULT_TARGET]
+    assert hass.states.get(DEFAULT_TARGET) is not None
+    assert hass.states.get(DEFAULT_TARGET).state == STATE_OFF
+    assert controller.episode_id == episode_id
+    second_deadline = controller.deadline
+    assert second_deadline is not None
+    assert second_deadline > first_deadline
+    assert controller.status is Status.COMPLETED
+
+    # A remote action while the room is still empty is enforced at the next
+    # interval, without requiring a new presence transition.
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON)
+    assert controller._episode is not None
+    await controller._async_deadline_reached(
+        controller._episode.generation, second_deadline
+    )
+
+    assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
+    assert hass.states.get(DEFAULT_TARGET) is not None
+    assert hass.states.get(DEFAULT_TARGET).state == STATE_OFF
+    third_deadline = controller.deadline
+    assert third_deadline is not None
+
+    # If everything is already off, the interval records a check without
+    # issuing redundant turn_off service calls, then schedules another check.
+    assert controller._episode is not None
+    await controller._async_deadline_reached(
+        controller._episode.generation, third_deadline
+    )
+
+    assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
+    assert controller.last_activity is not None
+    assert controller.last_activity.event_type is ActivityEventType.NO_ACTION
+    assert controller.last_activity.data["reason"] == "targets_already_off"
+    assert controller.last_activity.data["already_off_entities"] == [DEFAULT_TARGET]
+    assert controller.deadline is not None
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    assert controller.status is Status.OCCUPIED
+    assert controller.deadline is None
+
+
+async def test_recurring_enforcement_refreshes_restore_snapshot(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_recorder: RestoreRecorder,
+) -> None:
+    """A reactivated target restores its latest state when presence returns."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON, {"brightness": 137})
+    controller = await controller_factory(
+        _rule_config(delay_seconds=600, restore_on_presence=True)
+    )
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    assert controller._episode is not None
+    first_deadline = controller.deadline
+    assert first_deadline is not None
+    await controller._async_deadline_reached(
+        controller._episode.generation, first_deadline
+    )
+    await hass.async_block_till_done()
+
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON, {"brightness": 55})
+    await hass.async_block_till_done()
+    recurring_deadline = controller.deadline
+    assert recurring_deadline is not None
+    assert controller._episode is not None
+    await controller._async_deadline_reached(
+        controller._episode.generation, recurring_deadline
+    )
+    await hass.async_block_till_done()
+
+    assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
+    assert controller.restore_plan is not None
+    assert controller.restore_plan.items[0].before.attributes["brightness"] == 55
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+
+    assert [state.entity_id for state in restore_recorder.calls] == [DEFAULT_TARGET]
+    assert restore_recorder.calls[0].attributes["brightness"] == 55
+
+
 async def test_presence_return_cancels_pending_shutdown(
     hass: HomeAssistant,
     controller_factory: ControllerFactory,
@@ -344,7 +451,7 @@ async def test_countdown_is_anchored_to_each_off_transition(
     controller_factory: ControllerFactory,
     turn_off_recorder: TurnOffRecorder,
 ) -> None:
-    """The delay follows OFF transitions; updates do not create an interval."""
+    """The initial delay follows OFF transitions, not attribute updates."""
     hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
     controller = await controller_factory(_rule_config(delay_seconds=600))
 
@@ -651,28 +758,45 @@ async def test_target_moved_out_of_configured_area_is_not_called(
     assert controller.last_activity.event_type is ActivityEventType.FAILED
 
 
-async def test_completed_episode_is_not_repeated_after_restart(
+async def test_recurring_deadline_survives_restart_without_immediate_duplicate(
     hass: HomeAssistant,
     controller_factory: ControllerFactory,
     turn_off_recorder: TurnOffRecorder,
 ) -> None:
-    """A persisted completed episode remains at-most-once after restart."""
-    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
-    config = _rule_config()
+    """Restart retains the next interval and never repeats the prior attempt."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    config = _rule_config(delay_seconds=600)
     first = await controller_factory(config, "restart-entry")
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
     first_episode_id = first.episode_id
+    first_deadline = first.deadline
+    assert first._episode is not None
+    assert first_deadline is not None
+    await first._async_deadline_reached(first._episode.generation, first_deadline)
+    recurring_deadline = first.deadline
 
     assert first.status is Status.COMPLETED
     assert turn_off_recorder.calls == [DEFAULT_TARGET]
+    assert recurring_deadline is not None
     await first.async_unload()
 
     restarted = await controller_factory(config, "restart-entry")
 
     assert restarted.status is Status.COMPLETED
     assert restarted.episode_id == first_episode_id
+    assert restarted.deadline == recurring_deadline
     assert restarted.last_execution is not None
     assert restarted.last_execution.episode_id == first_episode_id
     assert turn_off_recorder.calls == [DEFAULT_TARGET]
+
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON)
+    assert restarted._episode is not None
+    await restarted._async_deadline_reached(
+        restarted._episode.generation, recurring_deadline
+    )
+    assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
 
 
 async def test_pending_deadline_survives_reload_and_uses_new_delay(
@@ -806,9 +930,12 @@ async def test_already_off_target_is_never_restore_eligible(
     hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
     await hass.async_block_till_done()
 
-    assert turn_off_recorder.calls == [DEFAULT_TARGET]
+    assert turn_off_recorder.calls == []
     assert restore_recorder.calls == []
     assert controller.restore_plan is None
+    assert controller.last_activity is not None
+    assert controller.last_activity.event_type is ActivityEventType.NO_ACTION
+    assert controller.last_activity.data["reason"] == "targets_already_off"
 
 
 async def test_unconfirmed_turn_off_is_not_restore_eligible(

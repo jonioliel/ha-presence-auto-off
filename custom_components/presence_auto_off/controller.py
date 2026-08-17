@@ -604,6 +604,13 @@ class PresenceAutoOffController:
         if self._episode is None:
             self._start_episode_locked(self._off_state_started_at())
 
+        # A completed marker is persisted before external service calls to
+        # prevent a crash from repeating the same shutdown. After a restart,
+        # resume enforcement at the following configured interval instead of
+        # abandoning the still-empty room.
+        if self._episode.completed:
+            self._resume_completed_episode_locked(dt_util.utcnow())
+
         return self._reconcile_episode_locked(dt_util.utcnow())
 
     def _reconcile_episode_locked(
@@ -649,7 +656,11 @@ class PresenceAutoOffController:
             self._status = (
                 Status.SENSOR_UNAVAILABLE
                 if self._day_type is DayType.UNKNOWN and not self._gate_allowed
-                else Status.COUNTDOWN
+                else (
+                    Status.COMPLETED
+                    if episode.completed_at is not None
+                    else Status.COUNTDOWN
+                )
             )
             return None, None
 
@@ -711,6 +722,7 @@ class PresenceAutoOffController:
     async def _async_execute_serialized(self, plan: _ExecutionPlan) -> None:
         """Call each target domain's turn_off service independently."""
         successful: list[str] = []
+        already_off: list[str] = []
         failed: dict[str, str] = {}
 
         for index, entity_id in enumerate(plan.target_entities):
@@ -732,7 +744,15 @@ class PresenceAutoOffController:
                 failed[entity_id] = "missing"
                 continue
 
-            if self.config.restore_on_presence and pre_state.state != STATE_OFF:
+            # An enforcement interval is a state check, not a reason to send
+            # redundant service calls. This also avoids making an existing
+            # restore journal look manually modified because an OFF target
+            # happened to emit an attribute update for another turn_off call.
+            if pre_state.state == STATE_OFF:
+                already_off.append(entity_id)
+                continue
+
+            if self.config.restore_on_presence:
                 registry_entry = er.async_get(self.hass).async_get(entity_id)
                 if registry_entry is None:
                     failed[entity_id] = "missing"
@@ -914,6 +934,9 @@ class PresenceAutoOffController:
         elif failed:
             event_type = ActivityEventType.FAILED
             reason = "partial_or_total_failure"
+        elif not successful:
+            event_type = ActivityEventType.NO_ACTION
+            reason = "targets_already_off"
         else:
             event_type = ActivityEventType.EXECUTED
             reason = "targets_turned_off"
@@ -929,12 +952,14 @@ class PresenceAutoOffController:
                 and not self._unloaded
             ):
                 self._status = Status.ERROR if failed else Status.COMPLETED
+                self._arm_next_enforcement_locked(dt_util.utcnow())
             activity = self._new_activity_locked(
                 event_type,
                 {
                     "reason": reason,
                     "episode_id": plan.episode_id,
                     "successful_entities": list(successful),
+                    "already_off_entities": list(already_off),
                     "failed_entities": dict(failed),
                     "partial_failure": bool(successful and failed),
                 },
@@ -1654,6 +1679,49 @@ class PresenceAutoOffController:
         )
         self._blocked_episode_id = None
 
+    def _resume_completed_episode_locked(self, now: datetime) -> None:
+        """Resume periodic enforcement after a persisted completed attempt."""
+        episode = self._episode
+        if episode is None or not episode.completed:
+            return
+        if self.config.delay_seconds <= 0:
+            return
+
+        # completed_at is the last attempt's durable boundary. Very old or
+        # malformed records without it start a fresh interval from setup time.
+        interval_started_at = episode.completed_at or now
+        self._generation += 1
+        self._episode = replace(
+            episode,
+            generation=self._generation,
+            deadline=interval_started_at + timedelta(seconds=self.config.delay_seconds),
+            completed=False,
+            completed_at=interval_started_at,
+        )
+        self._blocked_episode_id = None
+
+    def _arm_next_enforcement_locked(self, completed_at: datetime) -> None:
+        """Schedule the next check while the same absence remains active."""
+        episode = self._episode
+        if episode is None or self.config.delay_seconds <= 0:
+            self._cancel_deadline_locked()
+            return
+        if self._presence_value() != STATE_OFF or not self._enabled or self._unloaded:
+            self._cancel_deadline_locked()
+            return
+
+        self._cancel_deadline_locked()
+        self._generation += 1
+        self._episode = replace(
+            episode,
+            generation=self._generation,
+            deadline=completed_at + timedelta(seconds=self.config.delay_seconds),
+            completed=False,
+            completed_at=completed_at,
+        )
+        self._blocked_episode_id = None
+        self._schedule_deadline_locked(self._episode)
+
     def _off_state_started_at(self, state: State | None = None) -> datetime:
         """Return when the current OFF state began, failing safely on bad time."""
         current_state = state or self.hass.states.get(self.config.presence_entity)
@@ -1783,10 +1851,13 @@ class PresenceAutoOffController:
                 and episode.presence_entity == self.config.presence_entity
             ):
                 # An options reload retains continuous absence, while applying
-                # the newly configured duration to the original start time.
+                # the newly configured duration to the current phase. The
+                # initial countdown remains anchored to the OFF transition;
+                # recurring checks remain anchored to the prior execution.
+                interval_started_at = episode.completed_at or episode.started_at
                 self._episode = replace(
                     episode,
-                    deadline=episode.started_at
+                    deadline=interval_started_at
                     + timedelta(seconds=self.config.delay_seconds),
                 )
                 self._generation = max(self._generation, episode.generation)
