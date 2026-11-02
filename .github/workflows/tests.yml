@@ -3,6 +3,8 @@ name: Tests
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "23 4 * * 1"
   workflow_dispatch:
 
 permissions:
@@ -10,16 +12,29 @@ permissions:
 
 jobs:
   tests:
+    name: Home Assistant (${{ matrix.ha }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ha: [minimum, current, latest]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: requirements_test.txt
+          cache-dependency-path: requirements_test*.txt
       - name: Install test dependencies
-        run: python -m pip install -r requirements_test.txt
+        shell: bash
+        run: |
+          if [[ "${{ matrix.ha }}" == "minimum" ]]; then
+            python -m pip install -r requirements_test_min.txt
+          elif [[ "${{ matrix.ha }}" == "latest" ]]; then
+            python -m pip install --upgrade pytest-homeassistant-custom-component ruff==0.16.3
+          else
+            python -m pip install -r requirements_test.txt
+          fi
       - name: Ruff
         run: ruff check .
       - name: Ruff format

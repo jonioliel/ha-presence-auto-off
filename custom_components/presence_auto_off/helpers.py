@@ -16,4 +16,13 @@ def effective_area_id(hass: HomeAssistant, entity_entry: RegistryEntry) -> str |
         return None
     if (device_entry := dr.async_get(hass).async_get(entity_entry.device_id)) is None:
         return None
-    return device_entry.area_id
+    if device_entry.area_id is not None:
+        return device_entry.area_id
+    # HA child devices inherit their parent's area unless the entity or child
+    # overrides it. Older HA versions have no parent_device_id attribute.
+    parent_id = getattr(device_entry, "parent_device_id", None)
+    if parent_id is not None:
+        parent = dr.async_get(hass).async_get(parent_id)
+        if parent is not None:
+            return parent.area_id
+    return None

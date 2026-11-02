@@ -12,12 +12,13 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from homeassistant.const import (
     ATTR_ENTITY_ID,
+    EVENT_HOMEASSISTANT_STARTED,
     SERVICE_TURN_OFF,
     STATE_OFF,
     STATE_ON,
     STATE_UNAVAILABLE,
 )
-from homeassistant.core import State, split_entity_id
+from homeassistant.core import CoreState, Event, State, split_entity_id
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
@@ -80,6 +81,19 @@ class RestoreRecorder:
 type ControllerFactory = Callable[
     [RuleConfig, str | None], Awaitable[PresenceAutoOffController]
 ]
+
+
+@pytest.fixture(autouse=True)
+def running_home_assistant(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise normal operation after HA has completed its boot sequence."""
+    hass.set_state(CoreState.running)
+    monkeypatch.setattr(
+        "custom_components.presence_auto_off.controller."
+        "_TARGET_STATE_CONFIRM_TIMEOUT_SECONDS",
+        0.2,
+    )
 
 
 @pytest.fixture
@@ -214,6 +228,168 @@ async def _async_reach_deadline(
     generation = controller._episode.generation
     controller._cancel_deadline_locked()
     await controller._async_deadline_reached(generation, deadline)
+
+
+async def test_startup_preserves_absence_while_presence_sensor_is_loading(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """A temporarily missing startup sensor must not erase the saved deadline."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    config = _rule_config(delay_seconds=600)
+    first = await controller_factory(config, "boot-absence")
+    deadline = first.deadline
+    episode_id = first.episode_id
+    await first.async_unload()
+    hass.states.async_remove(PRESENCE_ENTITY)
+    hass.set_state(CoreState.starting)
+
+    restarted = await controller_factory(config, "boot-absence")
+    assert restarted.deadline == deadline
+    assert restarted.episode_id == episode_id
+    assert restarted.status is Status.INITIALIZING
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    assert turn_off_recorder.calls == []
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert restarted.deadline == deadline
+    assert restarted.episode_id == episode_id
+    assert restarted.status is Status.COUNTDOWN
+
+
+async def test_observed_presence_cycle_during_startup_resets_saved_absence(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """Observed occupancy during boot breaks the old continuous absence."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    config = _rule_config(delay_seconds=600)
+    first = await controller_factory(config, "boot-presence-cycle")
+    old_episode_id = first.episode_id
+    await first.async_unload()
+    hass.set_state(CoreState.starting)
+    restarted = await controller_factory(config, "boot-presence-cycle")
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    assert restarted.episode_id is None
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+
+    assert restarted.episode_id != old_episode_id
+    assert restarted.deadline == (
+        hass.states.get(PRESENCE_ENTITY).last_changed + timedelta(seconds=600)
+    )
+    assert turn_off_recorder.calls == []
+
+
+async def test_observed_target_cycle_during_startup_prevents_restoration(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_recorder: RestoreRecorder,
+) -> None:
+    """A device changed ON then OFF while booting must retain manual intent."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    config = _rule_config(restore_on_presence=True)
+    first = await controller_factory(config, "boot-target-cycle")
+    await first.async_unload()
+    hass.set_state(CoreState.starting)
+    restarted = await controller_factory(config, "boot-target-cycle")
+
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON)
+    hass.states.async_set(DEFAULT_TARGET, STATE_OFF)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+
+    assert restore_recorder.calls == []
+    assert restarted.last_restoration is not None
+    assert restarted.last_restoration.skipped_entities == {
+        DEFAULT_TARGET: "modified_since_shutdown"
+    }
+
+
+async def test_matching_initial_target_report_during_startup_allows_restore(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_recorder: RestoreRecorder,
+) -> None:
+    """Initial reports from a loading entity are not treated as manual changes."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    config = _rule_config(restore_on_presence=True)
+    first = await controller_factory(config, "boot-initial-target")
+    await first.async_unload()
+    hass.states.async_remove(DEFAULT_TARGET)
+    hass.set_state(CoreState.starting)
+    restarted = PresenceAutoOffController(hass, "boot-initial-target", config)
+    try:
+        await restarted.async_setup()
+        hass.states.async_set(DEFAULT_TARGET, STATE_UNAVAILABLE)
+        hass.states.async_set(DEFAULT_TARGET, STATE_OFF)
+        hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+        await hass.async_block_till_done()
+        hass.set_state(CoreState.running)
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+        await hass.async_block_till_done()
+        assert [state.entity_id for state in restore_recorder.calls] == [DEFAULT_TARGET]
+    finally:
+        await restarted.async_unload()
+
+
+async def test_startup_preserves_ready_restoration_until_sensor_is_loaded(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_recorder: RestoreRecorder,
+) -> None:
+    """Restore only after startup, even when presence appears ON during boot."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    config = _rule_config(restore_on_presence=True)
+    first = await controller_factory(config, "boot-restore")
+    assert first.restore_plan is not None
+    await first.async_unload()
+    hass.states.async_remove(PRESENCE_ENTITY)
+    hass.set_state(CoreState.starting)
+
+    restarted = await controller_factory(config, "boot-restore")
+    assert restarted.restore_plan is not None
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    assert restore_recorder.calls == []
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert [state.entity_id for state in restore_recorder.calls] == [DEFAULT_TARGET]
+    assert restarted.restore_plan is None
+
+
+async def test_unload_before_startup_cancels_deferred_execution(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """A startup callback cannot act after its entry has been unloaded."""
+    hass.set_state(CoreState.starting)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    controller = await controller_factory(_rule_config())
+    await controller.async_unload()
+
+    hass.set_state(CoreState.running)
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+    await hass.async_block_till_done()
+    assert turn_off_recorder.calls == []
 
 
 async def test_setup_save_failure_removes_all_live_callbacks(
@@ -934,6 +1110,288 @@ async def test_already_off_target_is_never_restore_eligible(
     assert controller.last_activity is not None
     assert controller.last_activity.event_type is ActivityEventType.NO_ACTION
     assert controller.last_activity.data["reason"] == "targets_already_off"
+
+
+@pytest.mark.parametrize("cancel_stage", ["service", "confirmation"])
+async def test_cancelled_shutdown_rearms_without_promoting_uncertain_restore(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_recorder: RestoreRecorder,
+    cancel_stage: str,
+) -> None:
+    """A cancelled attempt must not strand the live room without its next timer."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(
+        _rule_config(delay_seconds=600, restore_on_presence=True)
+    )
+
+    async def turn_off_without_confirmation(_call: ServiceCall) -> None:
+        if cancel_stage == "service":
+            raise asyncio.CancelledError
+
+    hass.services.async_register(
+        "light", SERVICE_TURN_OFF, turn_off_without_confirmation
+    )
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    deadline = controller.deadline
+    assert deadline is not None
+    confirmation = (
+        patch.object(
+            controller,
+            "_async_confirm_target_state",
+            side_effect=asyncio.CancelledError,
+        )
+        if cancel_stage == "confirmation"
+        else patch.object(
+            controller,
+            "_async_confirm_target_state",
+            wraps=controller._async_confirm_target_state,
+        )
+    )
+    with confirmation, pytest.raises(asyncio.CancelledError):
+        await _async_reach_deadline(controller, deadline)
+
+    assert controller.deadline == deadline + timedelta(seconds=600)
+    assert controller._episode is not None
+    assert controller._episode.completed is False
+    assert controller._unsub_deadline is not None
+    assert not controller._execution_tasks
+    assert controller.restore_plan is not None
+    assert controller.restore_plan.items[0].phase is RestoreItemPhase.PREPARED
+    assert controller.last_activity is not None
+    assert controller.last_activity.data["reason"] == "execution_cancelled"
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    assert restore_recorder.calls == []
+    assert controller.restore_plan is None
+
+
+async def test_cancelled_zero_delay_shutdown_does_not_start_retry_loop(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """Zero-delay rules keep their one-shot policy after a cancellation."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config())
+
+    async def cancelled_turn_off(_call: ServiceCall) -> None:
+        raise asyncio.CancelledError
+
+    hass.services.async_register("light", SERVICE_TURN_OFF, cancelled_turn_off)
+    controller._unsubscribe_state_changes()
+    old_state = hass.states.get(PRESENCE_ENTITY)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    with pytest.raises(asyncio.CancelledError):
+        await controller._async_state_changed(
+            Event(
+                "state_changed",
+                {
+                    "entity_id": PRESENCE_ENTITY,
+                    "old_state": old_state,
+                    "new_state": hass.states.get(PRESENCE_ENTITY),
+                },
+            )
+        )
+    assert controller.deadline is None
+    assert controller._unsub_deadline is None
+    assert controller._episode is not None
+    assert controller._episode.completed is True
+    assert not controller._execution_tasks
+
+
+@pytest.mark.parametrize("restore_enabled", [False, True])
+async def test_delayed_off_report_is_confirmed(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_enabled: bool,
+) -> None:
+    """A service may return before the device publishes its OFF state."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(
+        _rule_config(restore_on_presence=restore_enabled)
+    )
+
+    async def delayed_turn_off(call: ServiceCall) -> None:
+        entity_id = call.data[ATTR_ENTITY_ID]
+        turn_off_recorder.calls.append(entity_id)
+        hass.loop.call_later(0.01, hass.states.async_set, entity_id, STATE_OFF)
+
+    hass.services.async_register("light", SERVICE_TURN_OFF, delayed_turn_off)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+
+    assert controller.last_execution is not None
+    assert controller.last_execution.successful_entities == (DEFAULT_TARGET,)
+    assert controller.last_execution.failed_entities == {}
+    assert (controller.restore_plan is not None) is restore_enabled
+
+
+async def test_presence_return_during_delayed_off_restores_after_confirmation(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore_recorder: RestoreRecorder,
+) -> None:
+    """Presence must not strand a device whose OFF report is still arriving."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(restore_on_presence=True))
+
+    async def delayed_turn_off(call: ServiceCall) -> None:
+        entity_id = call.data[ATTR_ENTITY_ID]
+        turn_off_recorder.calls.append(entity_id)
+        hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+        hass.loop.call_later(0.01, hass.states.async_set, entity_id, STATE_OFF)
+
+    hass.services.async_register("light", SERVICE_TURN_OFF, delayed_turn_off)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+
+    assert hass.states.get(DEFAULT_TARGET).state == STATE_ON
+    assert [state.entity_id for state in restore_recorder.calls] == [DEFAULT_TARGET]
+    assert controller.restore_plan is None
+
+
+async def test_delayed_restoration_report_is_confirmed(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """State reproduction also permits the device's asynchronous ON report."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    controller = await controller_factory(_rule_config(restore_on_presence=True))
+
+    async def delayed_restore(_hass: HomeAssistant, state: State) -> None:
+        hass.loop.call_later(
+            0.01, hass.states.async_set, state.entity_id, state.state, state.attributes
+        )
+
+    monkeypatch.setattr(
+        "custom_components.presence_auto_off.controller.async_reproduce_state",
+        delayed_restore,
+    )
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await hass.async_block_till_done()
+    assert controller.last_restoration is not None
+    assert controller.last_restoration.restored_entities == (DEFAULT_TARGET,)
+    assert controller.last_restoration.failed_entities == {}
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_confirmation_listener_is_removed_on_timeout_or_cancellation(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    cancel: bool,
+) -> None:
+    """Every unsuccessful exit removes the temporary state listener."""
+    from homeassistant.helpers.event import async_track_state_change_event
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config())
+    unsubscribe = Mock()
+
+    def track(*args: object) -> Mock:
+        unsubscribe.side_effect = async_track_state_change_event(*args)
+        return unsubscribe
+
+    with patch(
+        "custom_components.presence_auto_off.controller.async_track_state_change_event",
+        side_effect=track,
+    ):
+        waiting = asyncio.create_task(
+            controller._async_confirm_target_state(DEFAULT_TARGET, STATE_OFF)
+        )
+        await asyncio.sleep(0)
+        assert not waiting.done()
+        if cancel:
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+        else:
+            assert await waiting is None
+    unsubscribe.assert_called_once_with()
+
+
+async def test_unload_interrupts_state_confirmation(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unloading does not wait for an in-flight confirmation deadline."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config())
+    called = asyncio.Event()
+
+    async def no_state_change(_call: ServiceCall) -> None:
+        called.set()
+
+    monkeypatch.setattr(
+        "custom_components.presence_auto_off.controller."
+        "_TARGET_STATE_CONFIRM_TIMEOUT_SECONDS",
+        60,
+    )
+    hass.services.async_register("light", SERVICE_TURN_OFF, no_state_change)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await called.wait()
+    await asyncio.sleep(0)
+    async with asyncio.timeout(1):
+        await controller.async_unload()
+        await hass.async_block_till_done()
+    assert not controller._execution_tasks
+
+
+async def test_unconfirmed_turn_off_is_reported_without_restoration(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """A successful service return alone does not prove a device was turned off."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config())
+
+    async def async_no_state_change(call: ServiceCall) -> None:
+        turn_off_recorder.calls.append(call.data[ATTR_ENTITY_ID])
+
+    hass.services.async_register("light", SERVICE_TURN_OFF, async_no_state_change)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+
+    assert controller.last_execution is not None
+    assert controller.last_execution.successful_entities == ()
+    assert controller.last_execution.failed_entities == {
+        DEFAULT_TARGET: "turn_off_not_confirmed"
+    }
+    assert controller.status is Status.ERROR
+
+
+@pytest.mark.parametrize("platform", ["presence_auto_off", "runtime_auto_off"])
+async def test_rule_control_switch_is_never_shut_down(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    platform: str,
+) -> None:
+    """Legacy selections cannot make either integration disable another rule."""
+    target = er.async_get(hass).async_get_or_create(
+        "switch", platform, "other-rule", suggested_object_id="other_rule_enabled"
+    )
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    controller = await controller_factory(
+        _rule_config(target_entities=(target.entity_id,))
+    )
+
+    assert turn_off_recorder.calls == []
+    assert controller.last_execution is not None
+    assert controller.last_execution.failed_entities == {
+        target.entity_id: "rule_control_target"
+    }
 
 
 async def test_unconfirmed_turn_off_is_not_restore_eligible(

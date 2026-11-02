@@ -19,6 +19,7 @@ from custom_components.presence_auto_off import (
 from custom_components.presence_auto_off.config_flow import (
     ALL_DAY_TYPES,
     CONF_DELAY,
+    _turn_off_entities_in_area,
 )
 from custom_components.presence_auto_off.const import (
     CONF_ALLOWED_DAY_TYPES,
@@ -37,6 +38,28 @@ from custom_components.presence_auto_off.const import (
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall
+
+
+@pytest.mark.parametrize("platform", ["presence_auto_off", "runtime_auto_off"])
+async def test_rule_control_switches_are_excluded_even_from_existing_choices(
+    hass: HomeAssistant,
+    platform: str,
+) -> None:
+    """Rule enable switches never appear among room shutdown targets."""
+
+    async def turn_off(_call: ServiceCall) -> None:
+        """Provide the normal switch capability."""
+
+    hass.services.async_register("switch", SERVICE_TURN_OFF, turn_off)
+    room = ar.async_get(hass).async_create("Test room")
+    registry = er.async_get(hass)
+    control = registry.async_get_or_create(
+        "switch", platform, "rule-control", suggested_object_id="rule_control"
+    )
+    registry.async_update_entity(control.entity_id, area_id=room.id)
+    assert control.entity_id not in _turn_off_entities_in_area(
+        hass, room.id, [control.id]
+    )
 
 
 def _schema_marker(result: dict[str, Any], key: str) -> Any:

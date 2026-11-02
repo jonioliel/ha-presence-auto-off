@@ -20,6 +20,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import (
     CALLBACK_TYPE,
+    CoreState,
     Event,
     EventStateChangedData,
     HomeAssistant,
@@ -32,6 +33,7 @@ from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
     async_track_state_change_event,
 )
+from homeassistant.helpers.start import async_at_started
 from homeassistant.helpers.state import async_reproduce_state
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -44,6 +46,7 @@ from .const import (
     ATTR_RULE_ID,
     DEFAULT_ENABLED,
     EVENT_ACTIVITY,
+    RULE_CONTROL_PLATFORMS,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
 )
@@ -66,6 +69,7 @@ from .models import (
 
 _LOGGER = logging.getLogger(__name__)
 _TARGET_SERVICE_TIMEOUT_SECONDS = 30.0
+_TARGET_STATE_CONFIRM_TIMEOUT_SECONDS = 5.0
 
 StateListener = Callable[[], None]
 ActivityListener = Callable[[ActivityEvent], None]
@@ -143,6 +147,7 @@ class PresenceAutoOffController:
         self._execution_tasks: set[asyncio.Task[Any]] = set()
         self._execution_idle = asyncio.Event()
         self._execution_idle.set()
+        self._confirmation_wake = asyncio.Event()
 
         self._enabled = DEFAULT_ENABLED
         self._status = Status.INITIALIZING
@@ -162,6 +167,8 @@ class PresenceAutoOffController:
         self._activity_listeners: set[ActivityListener] = set()
         self._unsub_state: CALLBACK_TYPE | None = None
         self._unsub_deadline: CALLBACK_TYPE | None = None
+        self._unsub_started: CALLBACK_TYPE | None = None
+        self._starting = False
         self._setup_complete = False
         self._unloaded = False
         self._action_inhibited = not DEFAULT_ENABLED
@@ -306,10 +313,24 @@ class PresenceAutoOffController:
             async with self._lock:
                 self._unloaded = False
                 self._restore_locked(stored)
+                self._setup_complete = True
+                self._starting = False
+                if self.hass.state is not CoreState.running:
+                    # Entry setup can precede the presence integration. Do not
+                    # erase a durable episode/journal because its sensor has
+                    # not published a state yet, or call services during boot.
+                    self._starting = True
+                    self._status = (
+                        Status.INITIALIZING if self._enabled else Status.DISABLED
+                    )
+                    self._unsub_started = async_at_started(
+                        self.hass, self._async_started
+                    )
+                    self._notify_state_listeners()
+                    return
                 self._refresh_gate_locked()
                 plan, activity = self._initialize_from_current_state_locked()
                 restore_episode_id = self._restore_episode_if_due_locked()
-                self._setup_complete = True
                 await self._async_save_locked()
                 self._action_inhibited = not self._enabled
 
@@ -324,9 +345,34 @@ class PresenceAutoOffController:
             self._rollback_failed_setup()
             raise
 
+    async def _async_started(self, _hass: HomeAssistant) -> None:
+        """Reconcile durable state after all integrations finish starting."""
+        self._unsub_started = None
+        async with self._lock:
+            if self._unloaded or not self._starting:
+                return
+            self._starting = False
+            self._refresh_gate_locked()
+            plan, activity = self._initialize_from_current_state_locked()
+            restore_episode_id = self._restore_episode_if_due_locked()
+            await self._async_save_locked()
+            self._action_inhibited = not self._enabled
+
+        self._notify_state_listeners()
+        if activity is not None:
+            self._publish_activity(activity)
+        if plan is not None:
+            await self._async_execute(plan)
+        if restore_episode_id is not None:
+            await self._async_restore(restore_episode_id)
+
     async def async_stop(self) -> None:
         """Stop automation work while retaining entity observers for rollback."""
+        self._confirmation_wake.set()
         self._unsubscribe_state_changes()
+        if self._unsub_started is not None:
+            self._unsub_started()
+            self._unsub_started = None
 
         # Publish the stop intent before waiting for the controller lock. A
         # write-ahead storage call may currently hold that lock; its mandatory
@@ -363,6 +409,12 @@ class PresenceAutoOffController:
             activity: ActivityEvent | None = None
             async with self._lock:
                 self._unloaded = False
+                if self._starting and self.hass.state is not CoreState.running:
+                    self._unsub_started = async_at_started(
+                        self.hass, self._async_started
+                    )
+                    return
+                self._starting = False
                 self._refresh_gate_locked()
                 plan, activity = self._initialize_from_current_state_locked()
                 restore_episode_id = self._restore_episode_if_due_locked()
@@ -396,6 +448,7 @@ class PresenceAutoOffController:
             # intent synchronously so its post-save check cannot start a new
             # external action before this setter acquires the lock.
             self._action_inhibited = True
+            self._confirmation_wake.set()
 
         plan: _ExecutionPlan | None = None
         activity: ActivityEvent | None = None
@@ -424,7 +477,7 @@ class PresenceAutoOffController:
                             "episode_id": pending_episode_id,
                         },
                     )
-            else:
+            elif not self._starting:
                 self._refresh_gate_locked()
                 plan, activity = self._initialize_from_current_state_locked()
 
@@ -448,6 +501,16 @@ class PresenceAutoOffController:
 
         async with self._lock:
             if not self._setup_complete or self._unloaded:
+                return
+
+            if self._starting:
+                # Record observed user/device changes without treating missing
+                # initial sensor reports as an interruption of durable state.
+                activity = self._record_startup_state_change_locked(event)
+                await self._async_save_locked()
+                self._notify_state_listeners()
+                if activity is not None:
+                    self._publish_activity(activity)
                 return
 
             entity_id = event.data["entity_id"]
@@ -552,6 +615,28 @@ class PresenceAutoOffController:
             await self._async_execute(plan)
         if restore_episode_id is not None:
             await self._async_restore(restore_episode_id)
+
+    def _record_startup_state_change_locked(
+        self, event: Event[EventStateChangedData]
+    ) -> ActivityEvent | None:
+        """Preserve observed transitions while waiting for HA to finish booting."""
+        if event.data["entity_id"] != self.config.presence_entity:
+            self._mark_restore_item_modified_locked(event)
+            return None
+
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
+        old_value = old_state.state if old_state is not None else None
+        new_value = new_state.state if new_state is not None else None
+        if self._episode is not None and (
+            new_value == STATE_ON or old_value == STATE_ON
+        ):
+            self._clear_episode_locked()
+        if old_value == STATE_ON and new_value != STATE_ON:
+            # An observed return followed by another absence consumes the old
+            # restore request; it must not leak into a later occupied episode.
+            return self._discard_restore_plan_locked("presence_changed_during_startup")
+        return None
 
     async def _async_deadline_reached(self, generation: int, _now: datetime) -> None:
         """Handle a deadline timer, rejecting stale generations."""
@@ -714,6 +799,40 @@ class PresenceAutoOffController:
         try:
             async with self._execution_lock:
                 await self._async_execute_serialized(plan)
+        except asyncio.CancelledError:
+            async with self._lock:
+                episode = self._episode
+                if (
+                    episode is not None
+                    and episode.episode_id == plan.episode_id
+                    and episode.generation == plan.generation
+                    and episode.completed
+                ):
+                    # A cancelled service/confirmation leaves PREPARED items
+                    # uncertain. Never promote them or issue another service
+                    # here; only rearm the next positive enforcement interval.
+                    self._status = Status.ERROR
+                    self._arm_next_enforcement_locked(
+                        max(plan.started_at, dt_util.utcnow())
+                    )
+                    activity = self._new_activity_locked(
+                        ActivityEventType.FAILED,
+                        {
+                            "reason": "execution_cancelled",
+                            "episode_id": plan.episode_id,
+                        },
+                    )
+                    try:
+                        await self._async_save_locked(force=True)
+                    except Exception:
+                        _LOGGER.warning(
+                            "Could not persist interrupted presence rule %s",
+                            self.config.rule_id,
+                            exc_info=True,
+                        )
+                    self._publish_activity(activity)
+            self._notify_state_listeners()
+            raise
         finally:
             self._execution_tasks.discard(current_task)
             if not self._execution_tasks:
@@ -865,10 +984,13 @@ class PresenceAutoOffController:
                     message,
                 )
             else:
-                if prepared_registry_id is not None:
-                    off_state = self.hass.states.get(entity_id)
-                    if off_state is None or off_state.state != STATE_OFF:
-                        failed[entity_id] = "turn_off_not_confirmed"
+                off_state = await self._async_confirm_target_state(entity_id, STATE_OFF)
+                if off_state is None:
+                    failed[entity_id] = "turn_off_not_confirmed"
+                elif prepared_registry_id is not None:
+                    target_error = self._target_runtime_error(entity_id)
+                    if target_error is not None:
+                        failed[entity_id] = target_error
                     else:
                         try:
                             after_off = self._snapshot_state(off_state)
@@ -883,7 +1005,15 @@ class PresenceAutoOffController:
                         else:
                             try:
                                 async with self._lock:
-                                    if self._mark_restore_ready_locked(
+                                    if (
+                                        self.hass.states.get(entity_id) is not off_state
+                                        or self._target_runtime_error(entity_id)
+                                        is not None
+                                    ):
+                                        failed[entity_id] = (
+                                            "state_changed_after_shutdown"
+                                        )
+                                    elif self._mark_restore_ready_locked(
                                         prepared_registry_id, after_off
                                     ):
                                         await self._async_save_locked(force=True)
@@ -970,6 +1100,54 @@ class PresenceAutoOffController:
 
         self._notify_state_listeners()
         self._publish_activity(activity)
+
+    async def _async_confirm_target_state(
+        self, entity_id: str, desired_state: str
+    ) -> State | None:
+        """Allow devices to publish delayed state reports without polling."""
+        wake = self._confirmation_wake
+
+        @callback
+        def state_changed(_event: Event[EventStateChangedData]) -> None:
+            wake.set()
+
+        unsubscribe = async_track_state_change_event(
+            self.hass, entity_id, state_changed
+        )
+        try:
+            async with asyncio.timeout(_TARGET_STATE_CONFIRM_TIMEOUT_SECONDS):
+                while True:
+                    # Subscribe first, then clear/read synchronously so a state
+                    # update cannot fall between the initial check and wait.
+                    wake.clear()
+                    if (
+                        self._unloaded
+                        or self._action_inhibited
+                        or self._target_runtime_error(entity_id) is not None
+                    ):
+                        return None
+                    current = self.hass.states.get(entity_id)
+                    if current is not None and current.state == desired_state:
+                        return current
+                    # Presence returning does not abort an already-issued OFF
+                    # command: its eventual OFF must remain eligible for the
+                    # restoration queued behind this execution.
+                    await wake.wait()
+        except TimeoutError:
+            # Include a report received at the timeout boundary even if its
+            # event callback lost the scheduling race with timeout delivery.
+            current = self.hass.states.get(entity_id)
+            if (
+                not self._unloaded
+                and not self._action_inhibited
+                and self._target_runtime_error(entity_id) is None
+                and current is not None
+                and current.state == desired_state
+            ):
+                return current
+            return None
+        finally:
+            unsubscribe()
 
     async def _async_restore(self, episode_id: str) -> None:
         """Serialize and account for one presence-triggered restoration."""
@@ -1178,8 +1356,10 @@ class PresenceAutoOffController:
                     restore_error,
                 )
             else:
-                current_state = self.hass.states.get(current_entity_id)
-                if current_state is None or current_state.state != item.before.state:
+                current_state = await self._async_confirm_target_state(
+                    current_entity_id, item.before.state
+                )
+                if current_state is None:
                     restore_error = "restore_not_confirmed"
 
             async with self._lock:
@@ -1438,6 +1618,8 @@ class PresenceAutoOffController:
         registry_entry = registry.async_get(entity_id)
         if registry_entry is None:
             return entity_id, "missing"
+        if registry_entry.platform in RULE_CONTROL_PLATFORMS:
+            return entity_id, "rule_control_target"
         configured_entity_id = self._configured_target_entity_by_registry.get(
             item.registry_entry_id
         )
@@ -1478,6 +1660,7 @@ class PresenceAutoOffController:
     ) -> None:
         """Remember any entity change made after a confirmed shutdown."""
         plan = self._restore_plan
+        old_state = event.data["old_state"]
         new_state = event.data["new_state"]
         if plan is None:
             return
@@ -1493,6 +1676,31 @@ class PresenceAutoOffController:
                 and item.entity_id_at_capture != event_entity_id
             ):
                 continue
+            if self._starting:
+                initial_report = (
+                    old_state is None
+                    or old_state.state
+                    in (
+                        STATE_UNAVAILABLE,
+                        STATE_UNKNOWN,
+                    )
+                    or (
+                        new_state is not None
+                        and old_state.state == new_state.state
+                        and old_state.attributes == new_state.attributes
+                    )
+                )
+                if initial_report and (
+                    new_state is None
+                    or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+                    or (
+                        new_state.state == item.after_off.state
+                        and new_state.attributes == item.after_off.attributes
+                    )
+                ):
+                    # Initial unknown/unavailable -> matching OFF reports are
+                    # normal during boot and do not imply manual modification.
+                    return
             # A state-change task emitted by our own turn_off may run after the
             # item was promoted to READY. Its timestamp predates capture. Every
             # later primary-state, attribute, availability, removal, or
@@ -1569,6 +1777,8 @@ class PresenceAutoOffController:
         registry_entry = er.async_get(self.hass).async_get(entity_id)
         if registry_entry is None:
             return "missing"
+        if registry_entry.platform in RULE_CONTROL_PLATFORMS:
+            return "rule_control_target"
         expected_registry_id = self._configured_target_registry_by_entity.get(entity_id)
         if expected_registry_id is None or registry_entry.id != expected_registry_id:
             return "selection_identity_changed"
@@ -1656,6 +1866,10 @@ class PresenceAutoOffController:
     def _rollback_failed_setup(self) -> None:
         """Make a partially initialized controller inert without more I/O."""
         self._unsubscribe_state_changes()
+        if self._unsub_started is not None:
+            self._unsub_started()
+            self._unsub_started = None
+        self._starting = False
         self._cancel_deadline_locked()
         self._generation += 1
         self._episode = None

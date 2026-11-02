@@ -10,3 +10,7 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+.audit-tools/
+.audit-private/
+/.codex-remote-attachments/
+/runtime-auto-off/

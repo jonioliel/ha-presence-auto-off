@@ -2,6 +2,29 @@
 
 All notable changes to SmplWise Presence Auto-Off are documented here.
 
+## [1.3.1] - 2026-11-02
+
+### Fixed
+
+- Allow up to five seconds for device state reports after a successful service
+  call, for both shutdown and restoration. A shutdown is successful only after
+  Home Assistant confirms `off`, even when restoration is disabled.
+- Preserve stored countdowns and restoration journals while Home Assistant is
+  starting; reconcile only after startup finishes.
+- Rearm positive enforcement intervals after cancelled execution, retaining
+  uncertain restore records without replaying them; zero-delay rules stay one-shot.
+- Honor areas inherited from parent devices in newer Home Assistant versions.
+- Exclude Presence/Runtime Auto-Off control switches from target selection and
+  execution, preventing one rule from disabling itself or another rule.
+- Export diagnostics for disabled or not-yet-loaded rules without raising an
+  error when no runtime controller exists.
+- Register devices without depending on `DeviceInfo` being a dictionary.
+
+### Development
+
+- Add regression coverage and a weekly Linux CI matrix for the minimum supported
+  HA test baseline, pinned HA 2026.10.4, and the latest available test helper.
+
 ## [1.3.0] - 2026-08-17
 
 ### Added

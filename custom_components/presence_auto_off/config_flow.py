@@ -46,6 +46,7 @@ from .const import (
     DEFAULT_DELAY_SECONDS,
     DEFAULT_RESTORE_ON_PRESENCE,
     DOMAIN,
+    RULE_CONTROL_PLATFORMS,
 )
 from .helpers import effective_area_id
 from .models import DayType
@@ -194,7 +195,12 @@ def _turn_off_entities_in_area(
     # temporarily unavailable. Runtime validation remains fail-safe.
     resolved_selected, _ = _resolve_entity_ids(hass, selected or [])
     candidates.update(resolved_selected)
-    return sorted(candidates)
+    return sorted(
+        entity_id
+        for entity_id in candidates
+        if (entry := entity_registry.async_get(entity_id)) is None
+        or entry.platform not in RULE_CONTROL_PLATFORMS
+    )
 
 
 def _optional_entity_marker(key: str, value: str | None) -> vol.Optional:
@@ -244,9 +250,13 @@ class _RuleFlowMixin:
             # which would expose every entity in Home Assistant.
             return vol.Schema({})
 
-        selected = _display_entity_ids(
-            self.hass, list(self._working.get(CONF_TARGET_ENTITIES, []))
-        )
+        selected = [
+            entity_id
+            for entity_id in _display_entity_ids(
+                self.hass, list(self._working.get(CONF_TARGET_ENTITIES, []))
+            )
+            if entity_id in candidates
+        ]
         return vol.Schema(
             {
                 vol.Required(

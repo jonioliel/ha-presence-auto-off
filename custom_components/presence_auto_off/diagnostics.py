@@ -15,7 +15,8 @@ async def async_get_config_entry_diagnostics(
     entry: PresenceAutoOffConfigEntry,
 ) -> dict[str, Any]:
     """Return configuration and in-memory runtime diagnostics."""
-    controller = entry.runtime_data
+    # Disabled entries and entries that failed before setup have no runtime_data.
+    controller = getattr(entry, "runtime_data", None)
     return {
         "config_entry": {
             "entry_id": entry.entry_id,
@@ -23,5 +24,5 @@ async def async_get_config_entry_diagnostics(
             "data": dict(entry.data),
             "options": dict(entry.options),
         },
-        "runtime": controller.diagnostics,
+        "runtime": controller.diagnostics if controller is not None else None,
     }

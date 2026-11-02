@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 DOMAIN: Final = "presence_auto_off"
+RULE_CONTROL_PLATFORMS: Final = frozenset({DOMAIN, "runtime_auto_off"})
 
 CONF_NAME: Final = "name"
 CONF_AREA_ID: Final = "area_id"

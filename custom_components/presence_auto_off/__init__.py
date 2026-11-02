@@ -19,7 +19,7 @@ from .const import (
     CONF_TARGET_ENTITIES,
 )
 from .controller import PresenceAutoOffController
-from .device import rule_device_info
+from .device import rule_device_parameters
 from .models import RuleConfig
 
 PLATFORMS: list[Platform] = [
@@ -81,7 +81,7 @@ async def async_setup_entry(
     # registration also keeps the device visible when users disable entities.
     dr.async_get(hass).async_get_or_create(
         config_entry_id=entry.entry_id,
-        **rule_device_info(entry, controller.config.name),
+        **rule_device_parameters(entry, controller.config.name),
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
