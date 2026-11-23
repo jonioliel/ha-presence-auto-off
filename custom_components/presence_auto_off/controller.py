@@ -70,6 +70,7 @@ from .models import (
 _LOGGER = logging.getLogger(__name__)
 _TARGET_SERVICE_TIMEOUT_SECONDS = 30.0
 _TARGET_STATE_CONFIRM_TIMEOUT_SECONDS = 5.0
+_TARGET_TURN_OFF_INTERVAL_SECONDS = 0.5
 
 StateListener = Callable[[], None]
 ActivityListener = Callable[[ActivityEvent], None]
@@ -845,6 +846,10 @@ class PresenceAutoOffController:
         failed: dict[str, str] = {}
 
         for index, entity_id in enumerate(plan.target_entities):
+            if index:
+                # Give device bridges time to process the preceding command.
+                # Recheck presence and rule eligibility after this await.
+                await asyncio.sleep(_TARGET_TURN_OFF_INTERVAL_SECONDS)
             prepared_registry_id: str | None = None
             async with self._lock:
                 stop_reason = self._execution_stop_reason_locked(plan)

@@ -499,6 +499,67 @@ async def test_immediate_absence_executes_once(
     assert controller.last_activity.event_type is ActivityEventType.EXECUTED
 
 
+async def test_empty_room_without_presence_transition_enforces_fifteen_minutes(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """An initially empty room keeps enforcing without any presence transition."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    hass.states.async_set(DEFAULT_TARGET, STATE_OFF)
+    controller = await controller_factory(_rule_config(delay_seconds=900))
+    deadline = controller.deadline
+    assert deadline is not None
+    assert controller.absence_started_at is not None
+    assert deadline - controller.absence_started_at == timedelta(minutes=15)
+    await _async_reach_deadline(controller, deadline)
+    assert turn_off_recorder.calls == []
+
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON)
+    await hass.async_block_till_done()
+    next_deadline = controller.deadline
+    assert next_deadline is not None
+    assert turn_off_recorder.calls == []
+    await _async_reach_deadline(controller, next_deadline)
+    assert turn_off_recorder.calls == [DEFAULT_TARGET]
+
+
+@pytest.mark.parametrize("presence_returns", [False, True])
+async def test_shutdown_spacing_rechecks_presence(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+    presence_returns: bool,
+) -> None:
+    """Commands are spaced and returning presence stops subsequent commands."""
+    second_target = "switch.second"
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await controller_factory(
+        _rule_config(target_entities=(DEFAULT_TARGET, second_target))
+    )
+    original_sleep = asyncio.sleep
+    pauses: list[float] = []
+
+    async def spaced_sleep(seconds: float) -> None:
+        if seconds == 0.5:
+            pauses.append(seconds)
+            assert turn_off_recorder.calls == [DEFAULT_TARGET]
+            if presence_returns:
+                hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+        await original_sleep(0)
+
+    monkeypatch.setattr(
+        "custom_components.presence_auto_off.controller.asyncio.sleep", spaced_sleep
+    )
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    assert pauses == [0.5]
+    assert turn_off_recorder.calls == (
+        [DEFAULT_TARGET] if presence_returns else [DEFAULT_TARGET, second_target]
+    )
+
+
 async def test_recurring_enforcement_turns_remote_reactivation_off(
     hass: HomeAssistant,
     controller_factory: ControllerFactory,

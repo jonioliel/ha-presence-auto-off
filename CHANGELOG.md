@@ -2,6 +2,15 @@
 
 All notable changes to SmplWise Presence Auto-Off are documented here.
 
+## [1.3.2] - 2026-11-23
+
+### Fixed
+
+- Space target shutdowns by half a second and recheck presence and rule
+  eligibility after the pause before continuing with the next target.
+- Add regression coverage for an initially empty room with remote activation
+  and a fifteen-minute enforcement interval, without any presence transition.
+
 ## [1.3.1] - 2026-11-02
 
 ### Fixed
