@@ -133,6 +133,9 @@
       }
     },
     "binary_sensor": {
+      "problem": {
+        "name": "תקלה בכיבוי האוטומטי"
+      },
       "shutdown_allowed": {
         "name": "הכיבוי מותר"
       }

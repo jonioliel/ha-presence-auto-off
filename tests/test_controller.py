@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -23,6 +24,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 
+from custom_components.presence_auto_off.binary_sensor import (
+    PresenceAutoOffProblemBinarySensor,
+)
 from custom_components.presence_auto_off.controller import (
     PresenceAutoOffController,
 )
@@ -912,6 +916,177 @@ async def test_target_failures_are_isolated(
     assert not controller.last_execution.succeeded
     assert controller.last_activity is not None
     assert controller.last_activity.event_type is ActivityEventType.FAILED
+
+
+async def test_failed_interval_remains_error_after_presence_attribute_update(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """An OFF attribute update must not hide the previous shutdown failure."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(delay_seconds=600))
+    turn_off_recorder.failing_entities.add(DEFAULT_TARGET)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    deadline = controller.deadline
+    assert deadline is not None
+    await _async_reach_deadline(controller, deadline)
+    next_deadline = controller.deadline
+    assert controller.status is Status.ERROR
+
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF, {"updated": True})
+    await hass.async_block_till_done()
+    assert controller.status is Status.ERROR
+    assert controller.deadline == next_deadline
+    assert turn_off_recorder.calls == [DEFAULT_TARGET]
+
+
+@pytest.mark.parametrize("zero_delay", [False, True])
+async def test_execution_boundary_storage_failure_is_safe_and_recoverable(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    zero_delay: bool,
+) -> None:
+    """Failed write-ahead sends no command and retains positive-interval retry."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(
+        _rule_config(delay_seconds=0 if zero_delay else 600)
+    )
+    controller._unsubscribe_state_changes()
+    old_state = hass.states.get(PRESENCE_ENTITY)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    event = Event(
+        "state_changed",
+        {
+            "entity_id": PRESENCE_ENTITY,
+            "old_state": old_state,
+            "new_state": hass.states.get(PRESENCE_ENTITY),
+        },
+    )
+    if not zero_delay:
+        await controller._async_state_changed(event)
+    deadline = controller.deadline
+    with patch.object(
+        controller._store,
+        "async_save",
+        new=AsyncMock(side_effect=OSError("storage unavailable")),
+    ):
+        if zero_delay:
+            await controller._async_state_changed(event)
+        else:
+            assert deadline is not None
+            await _async_reach_deadline(controller, deadline)
+
+    assert turn_off_recorder.calls == []
+    assert controller.status is Status.ERROR
+    assert controller.last_execution is not None
+    assert controller.last_execution.failed_entities == {
+        DEFAULT_TARGET: "execution_persist_failed"
+    }
+    assert controller.last_activity is not None
+    assert controller.last_activity.data["reason"] == "execution_persist_failed"
+    if zero_delay:
+        assert controller.deadline is None
+        assert controller._unsub_deadline is None
+    else:
+        assert controller.deadline == deadline + timedelta(seconds=600)
+        assert controller._unsub_deadline is not None
+        await _async_reach_deadline(controller, controller.deadline)
+        assert turn_off_recorder.calls == [DEFAULT_TARGET]
+        assert controller.last_execution.succeeded
+
+
+async def test_target_issues_exposes_unavailable_device_before_execution(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """Health diagnostics identify a disconnected target even in an occupied room."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(delay_seconds=600))
+    hass.states.async_set(DEFAULT_TARGET, STATE_UNAVAILABLE)
+    assert controller.target_issues == {DEFAULT_TARGET: "unavailable"}
+    assert controller.diagnostics["target_issues"] == controller.target_issues
+    assert controller.diagnostics["deadline_timer_armed"] is False
+    assert turn_off_recorder.calls == []
+
+
+async def test_problem_sensor_tracks_target_health_without_changing_deadline(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """Unavailable targets raise a live fault independently of restore mode."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(delay_seconds=600))
+    sensor = PresenceAutoOffProblemBinarySensor(
+        SimpleNamespace(
+            entry_id="entry", data={"rule_id": "rule"}, runtime_data=controller
+        )
+    )
+    listener = Mock()
+    controller.async_add_listener(listener)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    deadline = controller.deadline
+    assert sensor.is_on is False
+    listener.reset_mock()
+
+    hass.states.async_set(DEFAULT_TARGET, STATE_UNAVAILABLE)
+    await hass.async_block_till_done()
+    assert sensor.is_on is True
+    assert sensor.extra_state_attributes["target_issues"] == {
+        DEFAULT_TARGET: "unavailable"
+    }
+    listener.assert_called_once_with()
+    assert controller.deadline == deadline
+    assert turn_off_recorder.calls == []
+
+    await controller.async_set_enabled(False)
+    assert sensor.is_on is False
+    hass.states.async_set(DEFAULT_TARGET, STATE_ON)
+    await hass.async_block_till_done()
+    await controller.async_set_enabled(True)
+    assert sensor.is_on is False
+    assert controller.deadline == deadline
+    assert turn_off_recorder.calls == []
+
+
+async def test_unexpected_confirmation_failure_rearms_enforcement(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """An unhandled device-report error cannot permanently strand enforcement."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(delay_seconds=600))
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    deadline = controller.deadline
+    assert deadline is not None
+    with (
+        patch.object(
+            controller,
+            "_async_confirm_target_state",
+            side_effect=RuntimeError("unexpected confirmation failure"),
+        ),
+        pytest.raises(RuntimeError, match="unexpected confirmation failure"),
+    ):
+        await _async_reach_deadline(controller, deadline)
+    assert controller.status is Status.ERROR
+    assert controller._unsub_deadline is not None
+    assert controller.deadline == deadline + timedelta(seconds=600)
+    assert controller.last_execution.failed_entities == {
+        DEFAULT_TARGET: "execution_interrupted"
+    }
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF, {"update": 1})
+    await hass.async_block_till_done()
+    assert controller.status is Status.ERROR
+    await _async_reach_deadline(controller, controller.deadline)
+    assert controller.last_execution.succeeded
+    assert turn_off_recorder.calls == [DEFAULT_TARGET]
 
 
 async def test_turn_off_timeout_is_recorded_and_does_not_block_unload(

@@ -133,6 +133,9 @@
       }
     },
     "binary_sensor": {
+      "problem": {
+        "name": "Shutdown problem"
+      },
       "shutdown_allowed": {
         "name": "Shutdown allowed"
       }

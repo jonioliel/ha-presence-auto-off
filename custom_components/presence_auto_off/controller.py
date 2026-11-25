@@ -246,6 +246,8 @@ class PresenceAutoOffController:
             "presence_state": (
                 presence_state.state if presence_state is not None else None
             ),
+            "target_issues": self.target_issues,
+            "deadline_timer_armed": self._unsub_deadline is not None,
             "absence_episode": (
                 self._episode.as_dict() if self._episode is not None else None
             ),
@@ -265,6 +267,15 @@ class PresenceAutoOffController:
             "last_activity": (
                 self.last_activity.as_dict() if self.last_activity is not None else None
             ),
+        }
+
+    @property
+    def target_issues(self) -> dict[str, str]:
+        """Expose current target problems without sending device commands."""
+        return {
+            entity_id: error
+            for entity_id in self.config.target_entities
+            if (error := self._target_runtime_error(entity_id)) is not None
         }
 
     @callback
@@ -332,7 +343,9 @@ class PresenceAutoOffController:
                 self._refresh_gate_locked()
                 plan, activity = self._initialize_from_current_state_locked()
                 restore_episode_id = self._restore_episode_if_due_locked()
-                await self._async_save_locked()
+                if failure := await self._async_save_execution_boundary_locked(plan):
+                    plan = None
+                    activity = failure
                 self._action_inhibited = not self._enabled
 
             self._notify_state_listeners()
@@ -356,7 +369,9 @@ class PresenceAutoOffController:
             self._refresh_gate_locked()
             plan, activity = self._initialize_from_current_state_locked()
             restore_episode_id = self._restore_episode_if_due_locked()
-            await self._async_save_locked()
+            if failure := await self._async_save_execution_boundary_locked(plan):
+                plan = None
+                activity = failure
             self._action_inhibited = not self._enabled
 
         self._notify_state_listeners()
@@ -419,7 +434,9 @@ class PresenceAutoOffController:
                 self._refresh_gate_locked()
                 plan, activity = self._initialize_from_current_state_locked()
                 restore_episode_id = self._restore_episode_if_due_locked()
-                await self._async_save_locked()
+                if failure := await self._async_save_execution_boundary_locked(plan):
+                    plan = None
+                    activity = failure
                 self._action_inhibited = not self._enabled
 
             self._notify_state_listeners()
@@ -482,7 +499,9 @@ class PresenceAutoOffController:
                 self._refresh_gate_locked()
                 plan, activity = self._initialize_from_current_state_locked()
 
-            await self._async_save_locked()
+            if failure := await self._async_save_execution_boundary_locked(plan):
+                plan = None
+                activity = failure
             if enabled:
                 # Clear only after enabled-state reconciliation was saved. Any
                 # due plan executes after the lock with actions permitted.
@@ -515,6 +534,14 @@ class PresenceAutoOffController:
                 return
 
             entity_id = event.data["entity_id"]
+            if not self.config.restore_on_presence and entity_id not in (
+                self.config.presence_entity,
+                self.config.shabbat_entity,
+                self.config.holiday_entity,
+            ):
+                # Target health updates must not restart or advance a countdown.
+                self._notify_state_listeners()
+                return
             old_state = event.data["old_state"]
             new_state = event.data["new_state"]
             old_value = old_state.state if old_state is not None else None
@@ -607,7 +634,9 @@ class PresenceAutoOffController:
                 elif not self._episode.completed:
                     plan, activity = self._reconcile_episode_locked(dt_util.utcnow())
 
-            await self._async_save_locked()
+            if failure := await self._async_save_execution_boundary_locked(plan):
+                plan = None
+                activity = failure
 
         self._notify_state_listeners()
         if activity is not None:
@@ -652,13 +681,49 @@ class PresenceAutoOffController:
             self._unsub_deadline = None
             self._refresh_gate_locked()
             plan, activity = self._reconcile_episode_locked(dt_util.as_utc(_now))
-            await self._async_save_locked()
+            if failure := await self._async_save_execution_boundary_locked(plan):
+                plan = None
+                activity = failure
 
         self._notify_state_listeners()
         if activity is not None:
             self._publish_activity(activity)
         if plan is not None:
             await self._async_execute(plan)
+
+    async def _async_save_execution_boundary_locked(
+        self, plan: _ExecutionPlan | None
+    ) -> ActivityEvent | None:
+        """Fail closed on a lost write without abandoning periodic enforcement."""
+        try:
+            await self._async_save_locked()
+        except Exception:
+            if plan is None:
+                raise
+            _LOGGER.exception(
+                "Could not persist shutdown boundary for rule %s; no devices changed",
+                self.config.rule_id,
+            )
+            self._last_execution = LastExecution(
+                episode_id=plan.episode_id,
+                occurred_at=plan.started_at,
+                successful_entities=(),
+                failed_entities={
+                    entity_id: "execution_persist_failed"
+                    for entity_id in plan.target_entities
+                },
+            )
+            self._status = Status.ERROR
+            self._arm_next_enforcement_locked(max(plan.started_at, dt_util.utcnow()))
+            return self._new_activity_locked(
+                ActivityEventType.FAILED,
+                {
+                    "reason": "execution_persist_failed",
+                    "episode_id": plan.episode_id,
+                    "failed_entities": dict(self._last_execution.failed_entities),
+                },
+            )
+        return None
 
     def _initialize_from_current_state_locked(
         self,
@@ -743,7 +808,13 @@ class PresenceAutoOffController:
                 Status.SENSOR_UNAVAILABLE
                 if self._day_type is DayType.UNKNOWN and not self._gate_allowed
                 else (
-                    Status.COMPLETED
+                    (
+                        Status.ERROR
+                        if self._last_execution is not None
+                        and self._last_execution.episode_id == episode.episode_id
+                        and not self._last_execution.succeeded
+                        else Status.COMPLETED
+                    )
                     if episode.completed_at is not None
                     else Status.COUNTDOWN
                 )
@@ -800,7 +871,17 @@ class PresenceAutoOffController:
         try:
             async with self._execution_lock:
                 await self._async_execute_serialized(plan)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception) as err:
+            reason = (
+                "execution_cancelled"
+                if isinstance(err, asyncio.CancelledError)
+                else "execution_interrupted"
+            )
+            if not isinstance(err, asyncio.CancelledError):
+                _LOGGER.exception(
+                    "Unexpected shutdown interruption for rule %s",
+                    self.config.rule_id,
+                )
             async with self._lock:
                 episode = self._episode
                 if (
@@ -809,17 +890,25 @@ class PresenceAutoOffController:
                     and episode.generation == plan.generation
                     and episode.completed
                 ):
-                    # A cancelled service/confirmation leaves PREPARED items
+                    # An interrupted service/confirmation leaves PREPARED items
                     # uncertain. Never promote them or issue another service
                     # here; only rearm the next positive enforcement interval.
                     self._status = Status.ERROR
+                    self._last_execution = LastExecution(
+                        episode_id=plan.episode_id,
+                        occurred_at=plan.started_at,
+                        successful_entities=(),
+                        failed_entities={
+                            entity_id: reason for entity_id in plan.target_entities
+                        },
+                    )
                     self._arm_next_enforcement_locked(
                         max(plan.started_at, dt_util.utcnow())
                     )
                     activity = self._new_activity_locked(
                         ActivityEventType.FAILED,
                         {
-                            "reason": "execution_cancelled",
+                            "reason": reason,
                             "episode_id": plan.episode_id,
                         },
                     )
@@ -1836,9 +1925,6 @@ class PresenceAutoOffController:
     @callback
     def _tracked_entities(self) -> tuple[str, ...]:
         """Return the unique state entities observed by this rule."""
-        restore_targets = (
-            self.config.target_entities if self.config.restore_on_presence else ()
-        )
         return tuple(
             dict.fromkeys(
                 entity_id
@@ -1846,7 +1932,7 @@ class PresenceAutoOffController:
                     self.config.presence_entity,
                     self.config.shabbat_entity,
                     self.config.holiday_entity,
-                    *restore_targets,
+                    *self.config.target_entities,
                 )
                 if entity_id is not None
             )

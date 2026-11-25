@@ -2,6 +2,27 @@
 
 All notable changes to SmplWise Presence Auto-Off are documented here.
 
+## [1.3.3] - 2026-11-25
+
+### Fixed
+
+- Retain a positive-interval retry when saving the shutdown boundary fails,
+  including setup, startup, resume and re-enable, without sending device commands.
+- Rearm periodic enforcement after unexpected execution interruptions and record
+  uncertain targets as failed instead of leaving a room without its next check.
+- Preserve failed-check status across presence attribute updates while waiting
+  for the next enforcement interval.
+
+### Added
+
+- Expose current target validation problems and previous execution failures on
+  the room status sensor, and timer subscription state in diagnostics.
+- Observe target health even when presence restoration is disabled, without
+  advancing or resetting the room countdown.
+- Add a diagnostic problem binary sensor per room for unavailable targets,
+  unavailable required sensors and execution errors. Intentionally disabled rules
+  and normal day restrictions do not raise a problem.
+
 ## [1.3.2] - 2026-11-23
 
 ### Fixed

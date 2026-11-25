@@ -117,6 +117,7 @@ async def test_rule_device_owns_every_generated_entity(
         f"{rule_id}_last_restoration",
         f"{rule_id}_last_shutdown",
         f"{rule_id}_next_shutdown",
+        f"{rule_id}_problem",
         f"{rule_id}_shutdown_allowed",
         f"{rule_id}_status",
     }

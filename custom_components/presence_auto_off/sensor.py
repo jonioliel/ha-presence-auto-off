@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, override
+from typing import TYPE_CHECKING, Any, ClassVar, override
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 
@@ -52,6 +52,20 @@ class PresenceAutoOffStatusSensor(PresenceAutoOffEntity, SensorEntity):
     def native_value(self) -> str:
         """Return the current controller status."""
         return self.controller.status.value
+
+    @property
+    @override
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Make device failures visible directly on the room status entity."""
+        execution = self.controller.last_execution
+        return {
+            **super().extra_state_attributes,
+            "presence_entity": self.controller.config.presence_entity,
+            "target_issues": self.controller.target_issues,
+            "last_failed_entities": (
+                dict(execution.failed_entities) if execution is not None else {}
+            ),
+        }
 
 
 class PresenceAutoOffDayTypeSensor(PresenceAutoOffEntity, SensorEntity):
