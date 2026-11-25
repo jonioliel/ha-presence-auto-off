@@ -235,3 +235,8 @@ CI מריץ את שניהם וגם את חבילת הבדיקות העדכנית
 While absence continues, the rule repeats its shutdown check at the configured interval so explicitly selected targets that were reactivated remotely are turned off again.
 
 SmplWise Presence Auto-Off creates one editable room rule per config entry. It waits for a selected presence binary sensor to remain off, rechecks optional Shabbat/holiday binary-sensor conditions, and turns off only an explicit list of switchable entities assigned to the room's Home Assistant area. An optional restart-safe restore journal can reproduce the prior state of only the selected entities that the rule successfully turned off when presence returns. It is local-only, configured entirely through the UI, observable through status/timestamp/event entities, and installable through HACS.
+
+
+### Unconfirmed shutdown recovery
+
+A command that returns without an OFF report gets at most one immediate retry after the bounded confirmation wait. The second command requires the original unchanged device state and all safety gates to remain valid. Service errors, state changes, or closed gates fall back to the configured retry policy. An OFF report is Home Assistant telemetry; it is not independent proof of the physical device state.

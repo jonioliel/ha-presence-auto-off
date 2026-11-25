@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.4
+
+- Retry an unconfirmed shutdown once immediately when the original device state and all safety conditions still hold; otherwise retain the configured retry schedule.
+
 All notable changes to SmplWise Presence Auto-Off are documented here.
 
 ## [1.3.3] - 2026-11-25

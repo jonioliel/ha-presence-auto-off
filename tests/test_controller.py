@@ -1583,6 +1583,52 @@ async def test_unload_interrupts_state_confirmation(
     assert not controller._execution_tasks
 
 
+@pytest.mark.parametrize("restore", [False, True])
+async def test_missed_command_gets_one_immediate_retry(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+    restore: bool,
+) -> None:
+    """Recover a dropped bridge command within the same shutdown execution."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    controller = await controller_factory(_rule_config(restore_on_presence=restore))
+
+    async def missed_first_command(call: ServiceCall) -> None:
+        entity_id = call.data[ATTR_ENTITY_ID]
+        turn_off_recorder.calls.append(entity_id)
+        if len(turn_off_recorder.calls) == 2:
+            hass.states.async_set(entity_id, STATE_OFF)
+
+    hass.services.async_register("light", SERVICE_TURN_OFF, missed_first_command)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+
+    assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
+    assert controller.last_execution is not None
+    assert controller.last_execution.successful_entities == (DEFAULT_TARGET,)
+    assert controller.last_execution.failed_entities == {}
+
+
+async def test_presence_return_prevents_immediate_retry(
+    hass: HomeAssistant,
+    controller_factory: ControllerFactory,
+    turn_off_recorder: TurnOffRecorder,
+) -> None:
+    """A timed-out command cannot cause another OFF after occupancy returns."""
+    hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+    await controller_factory(_rule_config())
+
+    async def occupied_during_command(call: ServiceCall) -> None:
+        turn_off_recorder.calls.append(call.data[ATTR_ENTITY_ID])
+        hass.states.async_set(PRESENCE_ENTITY, STATE_ON)
+
+    hass.services.async_register("light", SERVICE_TURN_OFF, occupied_during_command)
+    hass.states.async_set(PRESENCE_ENTITY, STATE_OFF)
+    await hass.async_block_till_done()
+    assert turn_off_recorder.calls == [DEFAULT_TARGET]
+
+
 async def test_unconfirmed_turn_off_is_reported_without_restoration(
     hass: HomeAssistant,
     controller_factory: ControllerFactory,
@@ -1605,6 +1651,7 @@ async def test_unconfirmed_turn_off_is_reported_without_restoration(
         DEFAULT_TARGET: "turn_off_not_confirmed"
     }
     assert controller.status is Status.ERROR
+    assert turn_off_recorder.calls == [DEFAULT_TARGET, DEFAULT_TARGET]
 
 
 @pytest.mark.parametrize("platform", ["presence_auto_off", "runtime_auto_off"])

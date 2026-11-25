@@ -1079,8 +1079,34 @@ class PresenceAutoOffController:
                 )
             else:
                 off_state = await self._async_confirm_target_state(entity_id, STATE_OFF)
+                # A missed bridge command should not leave a room on for the
+                # full enforcement interval. Retry once only while the exact
+                # original state and every safety condition still hold.
                 if off_state is None:
-                    failed[entity_id] = "turn_off_not_confirmed"
+                    async with self._lock:
+                        retry_allowed = (
+                            self._execution_stop_reason_locked(plan) is None
+                            and self._target_runtime_error(entity_id) is None
+                            and self.hass.states.get(entity_id) is pre_state
+                        )
+                    if retry_allowed:
+                        try:
+                            async with asyncio.timeout(_TARGET_SERVICE_TIMEOUT_SECONDS):
+                                await self.hass.services.async_call(
+                                    domain,
+                                    SERVICE_TURN_OFF,
+                                    {ATTR_ENTITY_ID: entity_id},
+                                    blocking=True,
+                                )
+                            off_state = await self._async_confirm_target_state(
+                                entity_id, STATE_OFF
+                            )
+                        except TimeoutError:
+                            failed[entity_id] = "service_timeout"
+                        except Exception as err:
+                            failed[entity_id] = f"{type(err).__name__}: {err}"[:500]
+                if off_state is None:
+                    failed.setdefault(entity_id, "turn_off_not_confirmed")
                 elif prepared_registry_id is not None:
                     target_error = self._target_runtime_error(entity_id)
                     if target_error is not None:
